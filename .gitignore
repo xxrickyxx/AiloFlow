@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+
+# Compiled output
+dist/
+gui/dist/
+*.tsbuildinfo
+
+# Models, containers and shards are data, not source. A single model here can
+# be hundreds of gigabytes.
+models/
+sflow-models/
+*.gguf
+*.sflow
+*.bin
+*.ailolock
+
+# Local runtime state
+.ailoflow/
+downloads.json
+
+# Editor and OS noise
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# The original project brief is a working document, not part of the release.
+AILOFLOW.md

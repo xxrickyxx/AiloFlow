@@ -1,0 +1,41 @@
+{
+  "name": "ailoflow",
+  "version": "1.0.0",
+  "description": "Universal open-weight LLM runtime with dynamic streaming from storage across SSDs, RAM, and VRAM",
+  "main": "core/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc && cd gui && npm run build",
+    "start": "npm run build && node dist/apps/api/server.js",
+    "test": "tsc && node --test dist/tests/*.test.js",
+    "cli": "node dist/apps/cli/index.js",
+    "server": "tsc && node dist/apps/api/server.js",
+    "gui:dev": "cd gui && npm run dev",
+    "gui:build": "cd gui && npm run build"
+  },
+  "bin": {
+    "ailoflow": "dist/apps/cli/index.js"
+  },
+  "keywords": [
+    "llm",
+    "runtime",
+    "llama-cpp",
+    "sharding",
+    "storage-streaming",
+    "prefetch",
+    "vram-cache"
+  ],
+  "author": "AILOFlow Team",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.19.2",
+    "cors": "^2.8.5",
+    "commander": "^12.1.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.5",
+    "@types/node": "^20.12.7",
+    "@types/express": "^4.17.21",
+    "@types/cors": "^2.8.17"
+  }
+}
