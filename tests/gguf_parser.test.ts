@@ -51,6 +51,76 @@ test('rejects a missing file instead of returning placeholder metadata', () => {
   );
 });
 
+test('a split model reports the whole model, not just its first file', async () => {
+  const dir = scratchDir();
+  try {
+    // Two parts named the way Hugging Face publishes models over 50 GB.
+    const partA = writeSyntheticGguf(path.join(dir, 'big-00001-of-00002.gguf'), {
+      blockCount: 4,
+      elementsPerTensor: 256,
+    });
+    const partB = writeSyntheticGguf(path.join(dir, 'big-00002-of-00002.gguf'), {
+      blockCount: 6,
+      elementsPerTensor: 256,
+    });
+
+    const { discoverFileModels, inspectModel } = await import('../core/model/model_registry.js');
+    const { updateConfig, loadConfig } = await import('../core/config/config.js');
+
+    const originalDirs = loadConfig().modelDirectories;
+    updateConfig({ modelDirectories: [dir] });
+
+    try {
+      const models = discoverFileModels([dir]);
+
+      // The two files are one model, not two.
+      assert.strictEqual(models.length, 1, 'split parts must collapse into a single entry');
+      const model = models[0];
+      assert.strictEqual(model.splitParts?.length, 2);
+      assert.strictEqual(model.complete, true);
+
+      const singleFileSize = fs.statSync(partA.filePath).size;
+      const bothFilesSize = singleFileSize + fs.statSync(partB.filePath).size;
+      assert.strictEqual(model.fileSizeBytes, bothFilesSize, 'listed size covers every part');
+
+      const inspection = await inspectModel(model.id);
+
+      // The heart of the matter: reading only part one would report 4 tensors
+      // and half the bytes, understating the model by the split factor.
+      assert.strictEqual(inspection.tensorCount, partA.tensors.length + partB.tensors.length);
+      assert.strictEqual(inspection.fileSizeBytes, bothFilesSize);
+      assert.strictEqual(
+        inspection.totalTensorDataBytes,
+        partA.totalTensorBytes + partB.totalTensorBytes
+      );
+      assert.strictEqual(inspection.splitPartCount, 2);
+      assert.ok(inspection.tensorCount > partA.tensors.length, 'must exceed a single part');
+    } finally {
+      updateConfig({ modelDirectories: originalDirs });
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('an incomplete split set is not runnable', async () => {
+  const dir = scratchDir();
+  try {
+    // Part 2 of 3 is missing: the set advertises three files but holds two.
+    writeSyntheticGguf(path.join(dir, 'partial-00001-of-00003.gguf'), { blockCount: 2 });
+    writeSyntheticGguf(path.join(dir, 'partial-00003-of-00003.gguf'), { blockCount: 2 });
+
+    const { discoverFileModels } = await import('../core/model/model_registry.js');
+    const models = discoverFileModels([dir]);
+
+    assert.strictEqual(models.length, 1);
+    assert.strictEqual(models[0].complete, false, 'a set missing parts is incomplete');
+    assert.deepStrictEqual(models[0].runnableWith, [], 'an incomplete set cannot be loaded');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('rejects a non-GGUF file', () => {
   const dir = scratchDir();
   try {

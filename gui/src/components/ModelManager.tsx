@@ -261,6 +261,12 @@ export const ModelManager: React.FC<Props> = ({ onModelLoaded }) => {
                 <Field label={t('models.weightsInRam')} value={formatBytes(inspection.estimatedRamRequiredBytes)} />
                 <Field label={t('models.kvCache')} value={formatBytes(inspection.estimatedKvCacheBytes)} />
                 <Field label={t('models.heads')} value={`${inspection.headCount} / ${inspection.headCountKv}`} />
+                {inspection.splitPartCount > 1 && (
+                  <Field
+                    label={t('models.aggregatedOver')}
+                    value={t('models.splitParts', { n: inspection.splitPartCount })}
+                  />
+                )}
               </div>
             )}
 

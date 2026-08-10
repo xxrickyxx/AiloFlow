@@ -186,6 +186,7 @@ export interface ModelInspection {
   estimatedVramRequiredBytes: number;
   estimatedStorageRequiredBytes: number;
   estimatedKvCacheBytes: number;
+  splitPartCount: number;
 }
 
 export interface BackendAvailability {

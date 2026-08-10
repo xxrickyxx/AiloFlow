@@ -292,6 +292,7 @@ const en = {
   // Model manager extras
   'models.noEngineForModel': 'No engine available for this model',
   'models.splitParts': '{n} files',
+  'models.aggregatedOver': 'Totals aggregated over',
   'models.incompleteSet':
     'This model is published as a split file set and some parts are still missing, so it cannot be loaded yet. Finish the download from the Catalog tab.',
   'models.sweepLayers': 'Layers transferred',
@@ -573,6 +574,7 @@ const it: Record<TranslationKey, string> = {
 
   'models.noEngineForModel': 'Nessun motore disponibile per questo modello',
   'models.splitParts': '{n} file',
+  'models.aggregatedOver': 'Totali aggregati su',
   'models.incompleteSet':
     'Questo modello è pubblicato in più file e alcune parti mancano ancora, quindi non può essere caricato. Completa il download dalla scheda Catalogo.',
   'models.sweepLayers': 'Layer trasferiti',

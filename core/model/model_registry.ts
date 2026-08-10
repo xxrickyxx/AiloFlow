@@ -57,6 +57,8 @@ export interface ModelInspection {
   estimatedStorageRequiredBytes: number;
   /** KV cache bytes for the full context at f16, computed from real dims. */
   estimatedKvCacheBytes: number;
+  /** Number of files the model is split across; 1 for an ordinary model. */
+  splitPartCount: number;
 }
 
 const GGUF_MAGIC_LE = 0x46554747;
@@ -418,6 +420,69 @@ function estimateKvCacheBytes(meta: GgufMetadata): number {
   return Math.round(2 * meta.blockCount * meta.contextLength * kvDim * 2);
 }
 
+/**
+ * Aggregate a split model's real figures.
+ *
+ * Architecture, layer count and context length are global and identical in
+ * every part, so they come from the first. Tensor counts and byte totals are
+ * per-file and must be summed — only then do parameter count and memory
+ * requirement describe the actual model.
+ */
+function inspectSplitModel(model: DiscoveredModel, first: GgufMetadata): ModelInspection {
+  const parts = model.splitParts!;
+  let tensorCount = 0;
+  let totalTensorDataBytes = 0;
+  let totalElements = 0;
+  let fileSizeBytes = 0;
+  const problems: string[] = [];
+
+  for (const part of parts) {
+    try {
+      const meta = parseGgufHeader(part);
+      tensorCount += meta.tensorCount;
+      totalTensorDataBytes += meta.totalTensorDataBytes;
+      totalElements += meta.tensors.reduce((sum, t) => sum + Number(t.numElements), 0);
+      fileSizeBytes += meta.fileSizeBytes;
+    } catch (err) {
+      // A part we cannot read makes the totals wrong; say so rather than
+      // silently reporting a fraction of the model.
+      problems.push(`${path.basename(part)}: ${(err as Error).message}`);
+    }
+  }
+
+  if (problems.length > 0) {
+    throw new Error(
+      `Cannot read every part of this split model, so its size cannot be reported:\n  - ${problems.join('\n  - ')}`
+    );
+  }
+
+  const headDim = first.headCount > 0 ? first.embeddingLength / first.headCount : 0;
+  const kvDim = first.headCountKv * headDim;
+
+  return {
+    id: model.id,
+    source: model.source,
+    filePath: model.filePath!,
+    fileSizeBytes,
+    architecture: first.architecture,
+    modelName: first.modelName,
+    parameterCountBillions: Number((totalElements / 1e9).toFixed(2)),
+    quantization: first.quantization,
+    blockCount: first.blockCount,
+    contextLength: first.contextLength,
+    embeddingLength: first.embeddingLength,
+    headCount: first.headCount,
+    headCountKv: first.headCountKv,
+    tensorCount,
+    totalTensorDataBytes,
+    estimatedRamRequiredBytes: Math.ceil(totalTensorDataBytes * 1.15),
+    estimatedVramRequiredBytes: Math.ceil(totalTensorDataBytes * 0.25),
+    estimatedStorageRequiredBytes: fileSizeBytes,
+    estimatedKvCacheBytes: Math.round(2 * first.blockCount * first.contextLength * kvDim * 2),
+    splitPartCount: parts.length,
+  };
+}
+
 export async function inspectModel(id: string): Promise<ModelInspection> {
   const model = await findModelById(id);
   if (!model) throw new Error(`Model not found in registry: ${id}`);
@@ -448,10 +513,19 @@ export async function inspectModel(id: string): Promise<ModelInspection> {
       estimatedVramRequiredBytes: Math.ceil(m.totalSizeBytes * 0.25),
       estimatedStorageRequiredBytes: m.totalSizeBytes,
       estimatedKvCacheBytes: 0,
+      splitPartCount: 1,
     };
   }
 
   const meta = parseGgufHeader(model.filePath);
+
+  // A split model's first file declares only its own share of the tensors.
+  // Reporting those as the model's would understate a 357B model as a 79B one,
+  // and its memory requirement by the same factor, so every part is read.
+  if (model.splitParts && model.splitParts.length > 1) {
+    return inspectSplitModel(model, meta);
+  }
+
   return {
     id: model.id,
     source: model.source,
@@ -472,5 +546,6 @@ export async function inspectModel(id: string): Promise<ModelInspection> {
     estimatedVramRequiredBytes: meta.estimatedVramRequiredBytes,
     estimatedStorageRequiredBytes: meta.estimatedStorageRequiredBytes,
     estimatedKvCacheBytes: estimateKvCacheBytes(meta),
+    splitPartCount: 1,
   };
 }
