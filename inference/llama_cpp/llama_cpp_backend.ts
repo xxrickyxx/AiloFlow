@@ -184,6 +184,8 @@ export class LlamaCppBackend implements InferenceBackend {
   private modelPath = '';
   private startupLog: string[] = [];
   private contextLength = 0;
+  /** Abort handle for the generation currently in flight, if any. */
+  private activeRun: AbortController | null = null;
 
   public async checkAvailability(): Promise<BackendAvailability> {
     const binary = detectLlamaServerBinary();
@@ -301,13 +303,25 @@ export class LlamaCppBackend implements InferenceBackend {
     let timings: LlamaTimings | null = null;
     let usage: { prompt_tokens?: number; completion_tokens?: number } | null = null;
 
+    // Only one generation can be in flight per engine, and a client that stops
+    // listening does not always close its socket — some IDEs simply abandon the
+    // response. Superseding the previous run guarantees a stuck generation is
+    // released at the latest when the next request arrives.
+    this.stopActiveRun();
+    const run = new AbortController();
+    this.activeRun = run;
+    if (options.signal) {
+      if (options.signal.aborted) run.abort();
+      else options.signal.addEventListener('abort', () => run.abort(), { once: true });
+    }
+
     // Aborting this fetch closes the socket to llama-server, which stops the
     // generation instead of leaving it running against a client that has gone.
     const res = await fetch(`http://127.0.0.1:${this.port}/v1/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
-      signal: options.signal,
+      signal: run.signal,
     });
 
     if (!res.ok || !res.body) {
@@ -362,6 +376,7 @@ export class LlamaCppBackend implements InferenceBackend {
       }
     }
 
+    if (this.activeRun === run) this.activeRun = null;
     onToken({ token: '', isFinished: true });
     const totalDurationMs = performance.now() - startedAt;
 
@@ -383,6 +398,14 @@ export class LlamaCppBackend implements InferenceBackend {
         modelId: `gguf:${this.modelPath}`,
       },
     };
+  }
+
+  /** Stop whatever is generating right now. Safe to call when nothing is. */
+  public stopActiveRun(): boolean {
+    if (!this.activeRun || this.activeRun.signal.aborted) return false;
+    this.activeRun.abort();
+    this.activeRun = null;
+    return true;
   }
 
   public getLoadedModelPath(): string | null {

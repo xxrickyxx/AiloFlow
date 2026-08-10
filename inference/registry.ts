@@ -120,6 +120,20 @@ export class InferenceRegistry {
     this.lastMetrics = metrics;
   }
 
+  /**
+   * Stop whatever is generating right now.
+   *
+   * Needed because "the client went away" is not always observable: an IDE that
+   * abandons a response without closing the socket leaves the engine running,
+   * and the user needs a way to reclaim the GPU that does not involve
+   * restarting the runtime.
+   */
+  public stopGeneration(): boolean {
+    const backend = this.active;
+    if (backend && backend instanceof LlamaCppBackend) return backend.stopActiveRun();
+    return false;
+  }
+
   /** Refresh the Ollama client when its base URL changes in settings. */
   public reconfigure(): void {
     this.ollama = new OllamaBackend(loadConfig().ollamaBaseUrl);

@@ -192,6 +192,11 @@ app.post('/v1/models/load', async (req, res) => {
   }
 });
 
+/** Force-stop the generation in flight, freeing the GPU without a restart. */
+app.post('/v1/generation/stop', (_req, res) => {
+  res.json({ stopped: inference.stopGeneration() });
+});
+
 app.post('/v1/models/unload', async (_req, res) => {
   await inference.unload();
   updateConfig({ activeModelId: null });

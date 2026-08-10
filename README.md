@@ -77,6 +77,18 @@ the model feels like talking — with a reasoning model that is minutes of token
 nobody will read. The disconnect is forwarded to the engine and utilisation
 falls within seconds.
 
+Some clients stop reading without closing the socket, which is not observable as
+a disconnect. Two things cover that: a new request supersedes the one in flight,
+and `POST /v1/generation/stop` frees the GPU on demand without restarting
+anything.
+
+**Choosing a model for agent work.** A *Thinking* variant reasons before every
+answer and cannot be told not to — `enable_thinking`, `reasoning_budget: 0` and
+`/no_think` are all ignored by a model trained to always reason. For an 80B at
+19 tok/s that is minutes of deliberation per step, and the reasoning consumes the
+context an agent needs for its own instructions. Prefer an *Instruct* variant for
+IDE integration and keep the Thinking one for questions where the wait pays off.
+
 Whatever base URL you configure works: `.../v1`, `.../api`, or the bare host.
 Providers append `/api/chat` to whatever you typed, and the resulting duplicated
 prefix is normalised rather than answered with an HTML 404 that surfaces inside
@@ -296,6 +308,19 @@ disconnesso la cui generazione prosegue tiene occupata la GPU per tutto il tempo
 che il modello ha voglia di parlare — con un modello che ragiona, minuti di token
 che nessuno leggerà. La disconnessione viene propagata al motore e l'utilizzo
 scende in pochi secondi.
+
+Alcuni client smettono di leggere senza chiudere il socket, cosa che non è
+osservabile come disconnessione. Due cose lo coprono: una nuova richiesta
+sostituisce quella in corso, e `POST /v1/generation/stop` libera la GPU su
+richiesta senza riavviare nulla.
+
+**Scegliere il modello per il lavoro agentico.** Una variante *Thinking* ragiona
+prima di ogni risposta e non le si può dire di non farlo: `enable_thinking`,
+`reasoning_budget: 0` e `/no_think` vengono tutti ignorati da un modello
+addestrato a ragionare sempre. Per un 80B a 19 tok/s significa minuti di
+riflessione a ogni passo, e quel ragionamento consuma il contesto che serve
+all'agente per le proprie istruzioni. Per l'integrazione negli IDE conviene una
+variante *Instruct*, tenendo la Thinking per le domande in cui l'attesa ripaga.
 
 Qualunque base URL tu configuri funziona: `.../v1`, `.../api` o l'host nudo. I
 provider aggiungono `/api/chat` a ciò che hai scritto, e il prefisso duplicato
