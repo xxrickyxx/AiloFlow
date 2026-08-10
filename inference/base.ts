@@ -11,6 +11,12 @@ export interface GenerationOptions {
   stopSequences?: string[];
   seed?: number;
   contextLength?: number;
+  /**
+   * Aborts the run. A client that disconnects — an IDE cancelling a request, a
+   * closed tab — must stop the engine too, otherwise it keeps generating into
+   * nothing and holds the GPU for as long as the model feels like talking.
+   */
+  signal?: AbortSignal;
 }
 
 export interface StreamToken {

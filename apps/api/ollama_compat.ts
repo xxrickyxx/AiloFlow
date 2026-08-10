@@ -195,6 +195,14 @@ export function registerOllamaCompatRoutes(app: Express, deps: OllamaCompatDeps)
     const state = deps.inference.getState();
     if (!backend || !state) throw new Error('no model loaded');
 
+    // An IDE that cancels a request, or a user closing the panel, closes this
+    // response. Without forwarding that the engine keeps generating — a
+    // reasoning model can then hold the GPU for many minutes producing tokens
+    // nobody will ever read.
+    const abort = new AbortController();
+    res.on('close', () => abort.abort());
+    options.signal = abort.signal;
+
     deps.onGenerationStart();
     const createdAt = () => new Date().toISOString();
 
@@ -325,6 +333,8 @@ export function registerOllamaCompatRoutes(app: Express, deps: OllamaCompatDeps)
         'chat'
       );
     } catch (err) {
+      // A client that disconnected is not an error worth reporting back to it.
+      if ((err as Error).name === 'AbortError' || res.destroyed) return;
       finishWithError(res, body.model, (err as Error).message);
     }
   });

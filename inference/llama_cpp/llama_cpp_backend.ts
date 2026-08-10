@@ -301,10 +301,13 @@ export class LlamaCppBackend implements InferenceBackend {
     let timings: LlamaTimings | null = null;
     let usage: { prompt_tokens?: number; completion_tokens?: number } | null = null;
 
+    // Aborting this fetch closes the socket to llama-server, which stops the
+    // generation instead of leaving it running against a client that has gone.
     const res = await fetch(`http://127.0.0.1:${this.port}/v1/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
+      signal: options.signal,
     });
 
     if (!res.ok || !res.body) {

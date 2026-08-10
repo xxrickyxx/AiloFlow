@@ -13,6 +13,7 @@ import { discoverAllModels, inspectModel } from '../../core/model/model_registry
 import { parseGgufHeader } from '../../core/model/gguf_parser.js';
 import { createShardedSFlowModel } from '../../core/sharding/shard_manager.js';
 import { SFlowContainer } from '../../formats/sflow/sflow_format.js';
+import { GenerationOptions } from '../../inference/base.js';
 import { AiloStreamingPipeline, LayerSweepResult } from '../../inference/custom_stream/stream_runner.js';
 import { InferenceRegistry } from '../../inference/registry.js';
 import { ComputerProfile } from '../../core/hardware/types.js';
@@ -332,7 +333,7 @@ interface ChatBody {
   context_length?: number;
 }
 
-function buildOptions(body: ChatBody) {
+function buildOptions(body: ChatBody): GenerationOptions {
   const messages = body.messages || [];
   const systemPrompt = messages.find((m) => m.role === 'system')?.content;
   const conversation = messages.filter((m) => m.role === 'user' || m.role === 'assistant');
@@ -376,6 +377,13 @@ async function handleChatCompletion(body: ChatBody, res: Response): Promise<void
 
     const options = buildOptions(body);
     const stream = body.stream !== false;
+
+    // Stop the engine when the client goes away, rather than letting it run on
+    // and hold the GPU generating output nobody is reading.
+    const abort = new AbortController();
+    res.on('close', () => abort.abort());
+    options.signal = abort.signal;
+
     generationActive = true;
 
     if (stream) {
@@ -446,6 +454,9 @@ async function handleChatCompletion(body: ChatBody, res: Response): Promise<void
       });
     }
   } catch (err) {
+    // A disconnected client is not an error to report; the abort was expected.
+    if ((err as Error).name === 'AbortError' || res.destroyed) return;
+
     if (res.headersSent) {
       res.write(`event: error\ndata: ${JSON.stringify({ message: (err as Error).message })}\n\n`);
       res.end();

@@ -91,6 +91,7 @@ export class OllamaBackend implements InferenceBackend {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: this.modelTag, messages, stream: true, options: ollamaOptions }),
+      signal: options.signal,
     });
 
     if (!res.ok || !res.body) {

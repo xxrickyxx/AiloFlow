@@ -71,6 +71,17 @@ The context window is sized from the model's own maximum (capped at 32768 by
 default, adjustable). IDE assistants routinely send 12k-token system prompts, so
 llama.cpp's 4096 default is far too small.
 
+Cancelling a request in the IDE stops the engine. That sounds obvious, but a
+disconnected client whose generation keeps running holds the GPU for as long as
+the model feels like talking — with a reasoning model that is minutes of tokens
+nobody will read. The disconnect is forwarded to the engine and utilisation
+falls within seconds.
+
+Whatever base URL you configure works: `.../v1`, `.../api`, or the bare host.
+Providers append `/api/chat` to whatever you typed, and the resulting duplicated
+prefix is normalised rather than answered with an HTML 404 that surfaces inside
+the IDE as an unreadable error.
+
 ### Hardware discovery
 
 Everything is read from the system; nothing is inferred from a component's name.
@@ -279,6 +290,17 @@ La finestra di contesto viene dimensionata sul massimo del modello (con un tetto
 predefinito di 32768, modificabile). Gli assistenti negli IDE inviano
 abitualmente system prompt da 12k token, quindi il default di 4096 di llama.cpp
 è ampiamente insufficiente.
+
+Annullare una richiesta nell'IDE ferma il motore. Sembra ovvio, ma un client
+disconnesso la cui generazione prosegue tiene occupata la GPU per tutto il tempo
+che il modello ha voglia di parlare — con un modello che ragiona, minuti di token
+che nessuno leggerà. La disconnessione viene propagata al motore e l'utilizzo
+scende in pochi secondi.
+
+Qualunque base URL tu configuri funziona: `.../v1`, `.../api` o l'host nudo. I
+provider aggiungono `/api/chat` a ciò che hai scritto, e il prefisso duplicato
+che ne risulta viene normalizzato invece di produrre un 404 HTML che dentro
+l'IDE appare come un errore illeggibile.
 
 ### Rilevamento hardware
 
