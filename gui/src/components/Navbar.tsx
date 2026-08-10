@@ -3,6 +3,7 @@ import { Activity, Cloud, Cpu, HardDrive, Layers, MessageSquare, Settings } from
 import { ConnectionState } from '../hooks';
 import { DownloadJob } from '../downloads';
 import { DownloadIndicator } from './DownloadsPanel';
+import { StopGenerationButton } from './StopGenerationButton';
 import { TranslationKey, useI18n } from '../i18n';
 
 export type NavTab = 'dashboard' | 'storage' | 'models' | 'catalog' | 'chat' | 'settings';
@@ -14,6 +15,8 @@ interface NavbarProps {
   loadedModelName: string | null;
   downloads: DownloadJob[];
   onToggleDownloads: () => void;
+  /** True while the runtime reports a generation in flight. */
+  generationActive: boolean;
 }
 
 const TABS: Array<{ id: NavTab; labelKey: TranslationKey; icon: typeof Cpu }> = [
@@ -38,6 +41,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   loadedModelName,
   downloads,
   onToggleDownloads,
+  generationActive,
 }) => {
   const { t } = useI18n();
   const status = CONNECTION_STYLE[connection];
@@ -122,6 +126,7 @@ export const Navbar: React.FC<NavbarProps> = ({
       </nav>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: '9px' }}>
+        <StopGenerationButton active={generationActive} modelLoaded={loadedModelName !== null} />
         <DownloadIndicator jobs={downloads} onClick={onToggleDownloads} />
 
         <div

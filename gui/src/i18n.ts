@@ -221,6 +221,13 @@ const en = {
   'chat.tokensNa': 'tok/s n/a',
   'chat.tokenCount': '{count} tokens',
 
+  // Stop generation
+  'stop.button': 'Stop generation',
+  'stop.stopped': 'Engine stopped',
+  'stop.nothing': 'Nothing running',
+  'stop.hint':
+    'Frees the GPU when a generation is stuck — for example after an IDE abandoned a request without closing the connection.',
+
   // Downloads
   'dl.active': 'Downloads',
   'dl.none': 'No download in progress.',
@@ -499,6 +506,12 @@ const it: Record<TranslationKey, string> = {
   'chat.tokensPerSec': '{rate} tok/s',
   'chat.tokensNa': 'tok/s n/d',
   'chat.tokenCount': '{count} token',
+
+  'stop.button': 'Ferma generazione',
+  'stop.stopped': 'Motore fermato',
+  'stop.nothing': 'Niente in corso',
+  'stop.hint':
+    "Libera la GPU quando una generazione resta bloccata — per esempio dopo che un IDE ha abbandonato una richiesta senza chiudere la connessione.",
 
   'dl.active': 'Download',
   'dl.none': 'Nessun download in corso.',

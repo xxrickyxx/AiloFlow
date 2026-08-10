@@ -386,6 +386,9 @@ export const api = {
 
   unloadModel: () => request<{ unloaded: boolean }>('/models/unload', { method: 'POST' }),
 
+  /** Force-stop the generation in flight, freeing the GPU without a restart. */
+  stopGeneration: () => request<{ stopped: boolean }>('/generation/stop', { method: 'POST' }),
+
   backends: () =>
     request<{ backends: BackendAvailability[]; loaded: LoadedModelState | null }>('/backends'),
 

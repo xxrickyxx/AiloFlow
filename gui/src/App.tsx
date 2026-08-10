@@ -83,6 +83,7 @@ const Shell: React.FC = () => {
         loadedModelName={loadedModelName}
         downloads={downloads.jobs}
         onToggleDownloads={() => setShowDownloads((v) => !v)}
+        generationActive={snapshot?.generation.active === true}
       />
 
       {/* Downloads stay reachable from every screen, because the transfer

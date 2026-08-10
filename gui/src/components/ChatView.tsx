@@ -132,6 +132,9 @@ export const ChatView: React.FC = () => {
   const stop = () => {
     abortRef.current?.abort();
     setGenerating(false);
+    // Aborting our own request should also end the run on the engine; without
+    // this the GPU keeps working on a reply nobody is waiting for.
+    void api.stopGeneration().catch(() => undefined);
   };
 
   if (!backends.loading && !loaded) {
