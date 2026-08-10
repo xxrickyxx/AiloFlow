@@ -1,4 +1,5 @@
 import fs from 'fs';
+import path from 'path';
 
 // ============================================================================
 // GGUF Binary Format Constants
@@ -71,6 +72,15 @@ export interface GgufTensorInfo {
   sizeBytes: number;     // Calculated size of this tensor in bytes
   numElements: bigint;   // Total number of elements
   layerIndex: number;    // Extracted layer index (-1 if not a layer tensor)
+  /**
+   * File this tensor's bytes live in.
+   *
+   * For a single-file model this is the model itself, but a split model keeps
+   * each tensor in one specific part, and `absoluteOffset` is relative to that
+   * part. Anything reading tensor bytes must follow this rather than assume a
+   * single file.
+   */
+  sourceFile: string;
 }
 
 export interface GgufMetadata {
@@ -401,6 +411,7 @@ export function parseGgufHeader(filePath: string): GgufMetadata {
         sizeBytes,
         numElements,
         layerIndex,
+        sourceFile: filePath,
       });
 
       // Track how many *bytes* each type accounts for. Counting tensors instead
@@ -471,6 +482,66 @@ export function parseGgufHeader(filePath: string): GgufMetadata {
   }
 }
 
+/** `model-00002-of-00005.gguf` → every sibling part, in order. */
+export function resolveSplitParts(filePath: string): string[] {
+  const base = path.basename(filePath);
+  const match = base.match(/^(.*)-(\d{5})-of-(\d{5})\.gguf$/i);
+  if (!match) return [filePath];
+
+  const dir = path.dirname(filePath);
+  const total = Number(match[3]);
+  const parts: string[] = [];
+
+  for (let i = 1; i <= total; i++) {
+    const candidate = path.join(dir, `${match[1]}-${String(i).padStart(5, '0')}-of-${match[3]}.gguf`);
+    if (!fs.existsSync(candidate)) {
+      throw new Error(`Split model is missing part ${i} of ${total}: ${path.basename(candidate)}`);
+    }
+    parts.push(candidate);
+  }
+
+  return parts;
+}
+
+/**
+ * Parse a model that may be split over several files, as one model.
+ *
+ * Each part declares only the tensors it holds, with offsets into itself, so a
+ * caller that reads part one alone sees a fraction of the model and would copy
+ * bytes from the wrong file for everything else. This merges the tensor lists
+ * while keeping each entry pointing at the file it actually lives in.
+ */
+export function parseGgufModel(filePath: string): GgufMetadata {
+  const parts = resolveSplitParts(filePath);
+  const first = parseGgufHeader(parts[0]);
+  if (parts.length === 1) return first;
+
+  const tensors: GgufTensorInfo[] = [...first.tensors];
+  let fileSizeBytes = first.fileSizeBytes;
+  let totalTensorDataBytes = first.totalTensorDataBytes;
+
+  for (const part of parts.slice(1)) {
+    const meta = parseGgufHeader(part);
+    tensors.push(...meta.tensors);
+    fileSizeBytes += meta.fileSizeBytes;
+    totalTensorDataBytes += meta.totalTensorDataBytes;
+  }
+
+  const totalElements = tensors.reduce((sum, t) => sum + Number(t.numElements), 0);
+
+  return {
+    ...first,
+    fileSizeBytes,
+    tensorCount: tensors.length,
+    tensors,
+    totalTensorDataBytes,
+    parameterCountBillions: Number((totalElements / 1e9).toFixed(2)),
+    estimatedRamRequiredBytes: Math.ceil(totalTensorDataBytes * 1.15),
+    estimatedVramRequiredBytes: Math.ceil(totalTensorDataBytes * 0.25),
+    estimatedStorageRequiredBytes: fileSizeBytes,
+  };
+}
+
 /**
  * Build GGUF metadata for a synthetic in-memory model. Used only by tests that
  * need a tensor layout without a multi-gigabyte file on disk; it is never a
@@ -497,6 +568,7 @@ export function createSyntheticGgufMetadata(
       sizeBytes: tensorBytes,
       numElements: 64n * 64n,
       layerIndex: l,
+      sourceFile: filePath,
     });
   }
 

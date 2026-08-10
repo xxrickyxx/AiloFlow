@@ -86,7 +86,22 @@ export async function createShardedSFlowModel(
       `Cannot shard "${modelMeta.filename}": source GGUF not found at ${modelMeta.filePath}.`
     );
   }
-  const sourceFd: number = fs.openSync(modelMeta.filePath, 'r');
+
+  // A large model is published across several files, and each tensor's offset
+  // is relative to the file holding it. Reading everything from one descriptor
+  // would copy the wrong bytes for every tensor outside the first part, so a
+  // descriptor is kept per source file.
+  const sourceFds = new Map<string, number>();
+  const openSource = (file: string): number => {
+    const existing = sourceFds.get(file);
+    if (existing !== undefined) return existing;
+    if (!fs.existsSync(file)) {
+      throw new Error(`Cannot shard "${modelMeta.filename}": missing source part ${file}.`);
+    }
+    const fd = fs.openSync(file, 'r');
+    sourceFds.set(file, fd);
+    return fd;
+  };
 
   const shards: SFlowShardMetadata[] = [];
   const tensorMap: SFlowManifest['tensorMap'] = [];
@@ -147,7 +162,9 @@ export async function createShardedSFlowModel(
 
       let offsetInShard = 0;
       for (const t of layerTensors) {
-        // Copy the tensor's real bytes out of the GGUF and into the shard file.
+        // Copy the tensor's real bytes out of the GGUF and into the shard file,
+        // reading from whichever part actually holds it.
+        const sourceFd = openSource(t.sourceFile || modelMeta.filePath);
         let remaining = t.sizeBytes;
         let srcOffset = t.absoluteOffset;
 
@@ -212,7 +229,9 @@ export async function createShardedSFlowModel(
       }
     }
   } finally {
-    fs.closeSync(sourceFd);
+    for (const fd of sourceFds.values()) {
+      try { fs.closeSync(fd); } catch { /* already closed */ }
+    }
   }
 
   const manifest: SFlowManifest = {

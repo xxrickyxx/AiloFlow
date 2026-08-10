@@ -156,6 +156,42 @@ function registerEngineCleanup(): void {
   }
 }
 
+/**
+ * How long to wait for the engine to become ready, from the model's real size.
+ *
+ * Loading is bound by how fast the weights can be pulled off disk, so the
+ * budget is derived from total bytes at a deliberately pessimistic rate: a
+ * model spread over several files on a SATA array is far slower to fault in
+ * than one on NVMe, and being wrong here kills a load that was going to work.
+ */
+function startupBudgetMs(modelPath: string): number {
+  let totalBytes = 0;
+
+  try {
+    // Split sets are loaded whole, so every sibling counts towards the wait.
+    const dir = path.dirname(modelPath);
+    const base = path.basename(modelPath);
+    const split = base.match(/^(.*)-(\d{5})-of-(\d{5})\.gguf$/i);
+
+    if (split) {
+      for (const entry of fs.readdirSync(dir)) {
+        if (entry.startsWith(`${split[1]}-`) && entry.toLowerCase().endsWith('.gguf')) {
+          totalBytes += fs.statSync(path.join(dir, entry)).size;
+        }
+      }
+    } else {
+      totalBytes = fs.statSync(modelPath).size;
+    }
+  } catch {
+    return 300_000;
+  }
+
+  // 100 MB/s is well below any SSD, leaving room for a cold cache and a busy
+  // disk; floor at five minutes, cap at one hour.
+  const estimated = (totalBytes / (100 * 1024 * 1024)) * 1000;
+  return Math.min(3_600_000, Math.max(300_000, Math.round(estimated * 1.5)));
+}
+
 /** Choose the context window: explicit setting, else the model's own maximum, capped. */
 function resolveContextLength(modelPath: string, configured: number | null): number {
   if (configured !== null && configured > 0) return configured;
@@ -257,7 +293,12 @@ export class LlamaCppBackend implements InferenceBackend {
     this.proc.on('exit', () => { exited = true; });
 
     // llama.cpp loads weights before serving; poll /health until it is ready.
-    const deadline = Date.now() + 180_000;
+    //
+    // The budget has to scale with the model: a 45 GB file is ready in under a
+    // minute, but a 220 GB one spread over five files needs many minutes just to
+    // fault its weights in. A fixed timeout silently killed exactly the large
+    // models this runtime exists for.
+    const deadline = Date.now() + startupBudgetMs(modelPath);
     while (Date.now() < deadline) {
       if (exited) {
         throw new Error(
@@ -273,8 +314,12 @@ export class LlamaCppBackend implements InferenceBackend {
       await new Promise((r) => setTimeout(r, 400));
     }
 
+    const waited = Math.round(startupBudgetMs(modelPath) / 1000);
     await this.dispose();
-    throw new Error('llama-server did not become ready within 180s.');
+    throw new Error(
+      `llama-server did not become ready within ${waited}s. Last output:\n` +
+        this.startupLog.join('').slice(-1200)
+    );
   }
 
   public async generateStream(options: GenerationOptions, onToken: TokenCallback): Promise<GenerationResult> {

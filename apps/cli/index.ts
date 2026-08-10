@@ -7,7 +7,7 @@ import path from 'path';
 import { discoverComputerProfile, discoverStorage } from '../../core/hardware/discovery.js';
 import { benchmarkStorageDrive } from '../../core/benchmark/storage_benchmark.js';
 import { calculateOptimalConfiguration } from '../../core/hardware/optimizer.js';
-import { parseGgufHeader } from '../../core/model/gguf_parser.js';
+import { parseGgufHeader, parseGgufModel } from '../../core/model/gguf_parser.js';
 import { createShardedSFlowModel } from '../../core/sharding/shard_manager.js';
 import { SFlowContainer } from '../../formats/sflow/sflow_format.js';
 import { discoverAllModels, inspectModel } from '../../core/model/model_registry.js';
@@ -269,7 +269,7 @@ modelCmd
   .option('-d, --distribute', 'Write shards across every writable drive instead of one folder')
   .action(async (modelPath: string, options: { output?: string; distribute?: boolean }) => {
     try {
-      const meta = parseGgufHeader(path.resolve(modelPath));
+      const meta = parseGgufModel(path.resolve(modelPath));
       const drives = await discoverStorage();
       const outDir = options.output
         ? path.resolve(options.output)

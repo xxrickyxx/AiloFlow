@@ -137,6 +137,15 @@ npm run cli -- benchmark <container.sflow>   # stream every layer, measure
 `validate` exists because a manifest claiming 60 GB while its shards hold a few
 bytes is a stub, and the interface must be able to say so.
 
+**Models published across several files are handled as one model.** Anything
+past 50 GB arrives as an ordered set, and each part's header describes only the
+tensors it holds, with offsets into itself. Reading the first part alone reports
+a fraction of the model and would copy bytes from the wrong file for everything
+else, so parsing, inspection and sharding all follow each tensor to the part it
+actually lives in. Engine startup is given a budget derived from total size
+rather than a fixed timeout — a 220 GB set needs minutes just to fault in, and a
+fixed limit killed exactly the large models this runtime exists for.
+
 ### What the pipeline measures, and what it does not
 
 The layer sweep is real I/O: it reads every tensor from the storage fabric
@@ -370,6 +379,17 @@ npm run cli -- benchmark <container.sflow>     # legge ogni layer e misura
 
 `validate` esiste perché un manifest che dichiara 60 GB con shard da pochi byte
 è uno stub, e l'interfaccia deve poterlo dire.
+
+**I modelli pubblicati in più file sono trattati come un modello solo.** Tutto
+ciò che supera i 50 GB arriva come insieme ordinato, e l'header di ogni parte
+descrive soltanto i tensori che quella parte contiene, con offset relativi a se
+stessa. Leggere la prima parte da sola riporta una frazione del modello e
+copierebbe byte dal file sbagliato per tutto il resto, quindi analisi, scheda e
+sharding seguono ogni tensore fino alla parte in cui vive davvero. L'avvio del
+motore riceve un budget calcolato sulla dimensione totale invece di un timeout
+fisso: un insieme da 220 GB richiede minuti solo per essere mappato in memoria,
+e un limite fisso uccideva proprio i modelli grandi per cui questo runtime
+esiste.
 
 ### Cosa misura la pipeline, e cosa no
 

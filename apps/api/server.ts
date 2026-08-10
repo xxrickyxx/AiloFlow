@@ -10,7 +10,7 @@ import { benchmarkStorageDrive } from '../../core/benchmark/storage_benchmark.js
 import { TelemetryMonitor } from '../../core/telemetry/telemetry.js';
 import { loadConfig, updateConfig } from '../../core/config/config.js';
 import { discoverAllModels, inspectModel } from '../../core/model/model_registry.js';
-import { parseGgufHeader } from '../../core/model/gguf_parser.js';
+import { parseGgufModel } from '../../core/model/gguf_parser.js';
 import { createShardedSFlowModel } from '../../core/sharding/shard_manager.js';
 import { SFlowContainer } from '../../formats/sflow/sflow_format.js';
 import { GenerationOptions } from '../../inference/base.js';
@@ -217,7 +217,7 @@ app.post('/v1/models/shard', async (req, res) => {
   };
 
   try {
-    const meta = parseGgufHeader(String(modelPath));
+    const meta = parseGgufModel(String(modelPath));
     const outDir = outputDirectory || path.join(process.cwd(), 'sflow-models', meta.filename.replace(/\.gguf$/i, ''));
 
     send('start', {
