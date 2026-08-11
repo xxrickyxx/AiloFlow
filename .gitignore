@@ -8,8 +8,11 @@ gui/dist/
 
 # Models, containers and shards are data, not source. A single model here can
 # be hundreds of gigabytes.
-models/
-sflow-models/
+#
+# The leading slash matters: an unanchored "models/" matches at any depth and
+# silently excluded core/models/ — real source code — from the repository.
+/models/
+/sflow-models/
 *.gguf
 *.sflow
 *.bin
