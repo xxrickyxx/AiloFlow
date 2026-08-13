@@ -196,16 +196,24 @@ export class TelemetryMonitor {
 
     const gpuState = this.gpuMonitor.getState();
     const gpu = gpuState.aggregate;
-    const vramUsagePercent =
-      gpu.memoryUsedBytes !== null && gpu.memoryTotalBytes
-        ? Number(((gpu.memoryUsedBytes / gpu.memoryTotalBytes) * 100).toFixed(1))
-        : null;
-
     const io = sources.ioStats;
     const storageBandwidthMBps = io ? io.currentBandwidthMBps : null;
     const cacheMetrics = sources.cacheMetrics;
     const prefetchStats = sources.prefetchStats;
     const gen = sources.lastGeneration || null;
+
+    const effectiveVramUsedBytes =
+      cacheMetrics && cacheMetrics.vramUsedBytes > 0
+        ? cacheMetrics.vramUsedBytes
+        : gpu.memoryUsedBytes;
+
+    const effectiveVramTotalBytes =
+      gpu.memoryTotalBytes || (profile.gpus?.[0]?.vramTotalBytes ?? null);
+
+    const vramUsagePercent =
+      effectiveVramUsedBytes !== null && effectiveVramTotalBytes
+        ? Number(((effectiveVramUsedBytes / effectiveVramTotalBytes) * 100).toFixed(1))
+        : null;
 
     const bottleneck = this.detectBottleneck({
       cpuUsagePercent: this.cpuUsagePercent,
@@ -228,8 +236,8 @@ export class TelemetryMonitor {
       ramTotalBytes,
       gpuUsagePercent: gpu.utilizationPercent,
       vramUsagePercent,
-      vramUsedBytes: gpu.memoryUsedBytes,
-      vramTotalBytes: gpu.memoryTotalBytes,
+      vramUsedBytes: effectiveVramUsedBytes,
+      vramTotalBytes: effectiveVramTotalBytes,
       gpuTemperatureC: gpu.temperatureC,
       gpus: gpuState.samples,
       gpuUnavailableReason: gpuState.unavailableReason,

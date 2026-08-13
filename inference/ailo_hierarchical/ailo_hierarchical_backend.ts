@@ -190,6 +190,10 @@ export class AiloHierarchicalBackend implements InferenceBackend {
         kind: 'content',
       });
 
+      // Yield execution to the Node.js I/O event loop so Express flushes each
+      // SSE token chunk down the socket immediately.
+      await new Promise((resolve) => setImmediate(resolve));
+
       if (isFinished) {
         break;
       }
