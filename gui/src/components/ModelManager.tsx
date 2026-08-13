@@ -3,6 +3,7 @@ import { Box, CheckCircle2, Cpu, Layers, Play, RefreshCw, Scissors, Search, XCir
 import { api, DiscoveredModel, LayerSweepResult, ModelInspection, streamPost } from '../api';
 import { useAsync } from '../hooks';
 import { EmptyState, ErrorBox, Spinner } from './Common';
+import { TuningPanel } from './TuningPanel';
 import { useI18n } from '../i18n';
 import { formatBytes, formatNumber } from '../format';
 
@@ -22,6 +23,17 @@ export const ModelManager: React.FC<Props> = ({ onModelLoaded }) => {
   const [shardLog, setShardLog] = useState<string[]>([]);
   const [sweep, setSweep] = useState<LayerSweepResult | null>(null);
   const [sflowPath, setSflowPath] = useState<string | null>(null);
+  const [preferredEngine, setPreferredEngine] = useState<string>('ailo-hierarchical');
+  // Elapsed seconds while a load is in flight. A 200 GB model takes minutes to
+  // fault in, and a button that just sits there reads as a hang.
+  const [loadElapsed, setLoadElapsed] = useState(0);
+
+  React.useEffect(() => {
+    if (busy !== 'load') return;
+    setLoadElapsed(0);
+    const handle = window.setInterval(() => setLoadElapsed((s) => s + 1), 1000);
+    return () => window.clearInterval(handle);
+  }, [busy]);
 
   const select = async (model: DiscoveredModel) => {
     setSelected(model);
@@ -46,7 +58,7 @@ export const ModelManager: React.FC<Props> = ({ onModelLoaded }) => {
     setBusy('load');
     setError(null);
     try {
-      await api.loadModel(selected.id);
+      await api.loadModel(selected.id, preferredEngine);
       backends.reload();
       onModelLoaded();
     } catch (err) {
@@ -207,7 +219,26 @@ export const ModelManager: React.FC<Props> = ({ onModelLoaded }) => {
                 </p>
               </div>
 
-              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
+                <select
+                  value={preferredEngine}
+                  onChange={(e) => setPreferredEngine(e.target.value)}
+                  style={{
+                    padding: '8px 12px',
+                    borderRadius: '8px',
+                    border: '1px solid var(--border-color)',
+                    background: 'var(--bg-card)',
+                    color: 'var(--text-primary)',
+                    fontSize: '12px',
+                    fontWeight: 600,
+                  }}
+                  disabled={busy !== null}
+                >
+                  <option value="ailo-hierarchical">⚡ AILOFlow Active Weights (Gerarchico)</option>
+                  <option value="llama.cpp">🦙 llama.cpp Native Server</option>
+                  <option value="ollama">🦙 Ollama Local Daemon</option>
+                </select>
+
                 <button
                   className="btn-primary"
                   onClick={load}
@@ -215,7 +246,9 @@ export const ModelManager: React.FC<Props> = ({ onModelLoaded }) => {
                   title={selected.runnableWith.length === 0 ? t('models.noEngineForModel') : undefined}
                 >
                   {busy === 'load' ? <RefreshCw size={15} className="spin" /> : <Play size={15} />}
-                  Carica per l'inferenza
+                  {busy === 'load'
+                    ? t('models.loading', { seconds: loadElapsed })
+                    : t('models.load')}
                 </button>
 
                 {selected.source === 'gguf' || (selected.source === 'ollama' && selected.filePath) ? (
@@ -276,6 +309,12 @@ export const ModelManager: React.FC<Props> = ({ onModelLoaded }) => {
               </p>
             )}
           </div>
+        )}
+
+        {/* Tuning belongs next to the model, not in global settings: the right
+            values depend on this model's shape as much as on the machine. */}
+        {selected && selected.source !== 'sflow' && selected.filePath && (
+          <TuningPanel modelId={selected.id} />
         )}
 
         {shardLog.length > 0 && (

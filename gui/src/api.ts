@@ -286,6 +286,69 @@ export interface EstimateResponse {
   weightBytesAtQuant: number;
 }
 
+export interface TuningOverrides {
+  expertsPerToken: number | null;
+  gpuLayers: number | null;
+  cpuMoeLayers: number | null;
+  contextLength: number | null;
+  kvCacheType: 'f16' | 'q8_0' | 'q4_0' | null;
+  threads: number | null;
+  batchSize: number | null;
+  ubatchSize: number | null;
+  flashAttention: 'auto' | 'on' | 'off' | null;
+  loadMode: 'mmap' | 'mlock' | 'mmap+mlock' | null;
+}
+
+export interface TuningDecision<T> {
+  effective: T;
+  auto: T;
+  override: T | null;
+  reason: string;
+}
+
+export interface TuningPlan {
+  model: {
+    architecture: string;
+    layers: number;
+    contextLength: number;
+    totalBytes: number;
+    isMoe: boolean;
+    expertCount: number | null;
+    expertsUsedByDefault: number | null;
+    expertBytes: number;
+    denseBytes: number;
+    totalParamsB: number;
+  };
+  diskBound: boolean;
+  expertsPerToken: TuningDecision<number> | null;
+  gpuLayers: TuningDecision<number>;
+  cpuMoeLayers: TuningDecision<number>;
+  contextLength: TuningDecision<number>;
+  kvCacheType: TuningDecision<'f16' | 'q8_0' | 'q4_0'>;
+  threads: TuningDecision<number>;
+  batchSize: TuningDecision<number>;
+  ubatchSize: TuningDecision<number>;
+  flashAttention: TuningDecision<'auto' | 'on' | 'off'>;
+  loadMode: TuningDecision<'mmap' | 'mlock' | 'mmap+mlock'>;
+  projection: {
+    bytesPerToken: number;
+    bytesPerTokenAtDefault: number;
+    activeParamsB: number | null;
+    activeParamsBAtDefault: number | null;
+    kvCacheBytes: number;
+    bytesFromStorage: number;
+    storageCeilingTokensPerSecond: number | null;
+  };
+  warnings: string[];
+}
+
+export interface TuningPreset {
+  id: string;
+  label: string;
+  description: string;
+  overrides: Partial<TuningOverrides>;
+}
+
 export interface AiloConfig {
   apiPort: number;
   modelDirectories: string[];
@@ -382,8 +445,8 @@ export const api = {
   inspectModel: (id: string) =>
     request<ModelInspection>(`/models/inspect?id=${encodeURIComponent(id)}`),
 
-  loadModel: (id: string) =>
-    request<LoadedModelState>('/models/load', { method: 'POST', body: JSON.stringify({ id }) }),
+  loadModel: (id: string, backendId?: string) =>
+    request<LoadedModelState>('/models/load', { method: 'POST', body: JSON.stringify({ id, backendId }) }),
 
   unloadModel: () => request<{ unloaded: boolean }>('/models/unload', { method: 'POST' }),
 

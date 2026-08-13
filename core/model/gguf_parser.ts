@@ -511,8 +511,36 @@ export function resolveSplitParts(filePath: string): string[] {
  * bytes from the wrong file for everything else. This merges the tensor lists
  * while keeping each entry pointing at the file it actually lives in.
  */
+/**
+ * Parsed headers, keyed by path and invalidated by the file's own mtime and
+ * size. A 200B model is spread over five files whose headers list hundreds of
+ * thousands of tensors; re-reading them for every request that merely wants to
+ * know the model's shape is what made the tuning panel feel broken.
+ */
+const headerCache = new Map<string, { stamp: string; meta: GgufMetadata }>();
+
+function cacheStamp(parts: string[]): string {
+  return parts
+    .map((part) => {
+      const stat = fs.statSync(part);
+      return `${part}:${stat.mtimeMs}:${stat.size}`;
+    })
+    .join('|');
+}
+
 export function parseGgufModel(filePath: string): GgufMetadata {
   const parts = resolveSplitParts(filePath);
+
+  const stamp = cacheStamp(parts);
+  const cached = headerCache.get(filePath);
+  if (cached && cached.stamp === stamp) return cached.meta;
+
+  const meta = readGgufModel(parts);
+  headerCache.set(filePath, { stamp, meta });
+  return meta;
+}
+
+function readGgufModel(parts: string[]): GgufMetadata {
   const first = parseGgufHeader(parts[0]);
   if (parts.length === 1) return first;
 

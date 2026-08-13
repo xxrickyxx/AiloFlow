@@ -30,6 +30,7 @@ import {
 import { downloadManager } from '../../core/models/download_manager.js';
 import { benchmarkMemoryBandwidth, getStoredRamBandwidth } from '../../core/benchmark/memory_benchmark.js';
 import { estimatePerformance, ModelSpec, projectWithStorageBandwidth } from '../../core/estimator/performance_model.js';
+import { suggestPresets } from '../../core/tuning/runtime_tuning.js';
 import { registerOllamaCompatRoutes } from './ollama_compat.js';
 
 const app = express();
@@ -54,8 +55,24 @@ let lastSweep: LayerSweepResult | null = null;
 let lastGenerationAt: string | null = null;
 let generationActive = false;
 
+import { AiloHierarchicalBackend } from '../../inference/ailo_hierarchical/ailo_hierarchical_backend.js';
+
 function telemetrySources() {
+  const backend = inference.getActiveBackend();
+  let ioStats;
+  let prefetchStats;
+  let cacheMetrics;
+
+  if (backend instanceof AiloHierarchicalBackend) {
+    ioStats = backend.getIoStats();
+    prefetchStats = backend.getPrefetchStats();
+    cacheMetrics = backend.getCacheMetrics();
+  }
+
   return {
+    ioStats,
+    prefetchStats,
+    cacheMetrics,
     lastGeneration: inference.getLastMetrics(),
     lastGenerationAt,
     generationActive,
@@ -143,7 +160,9 @@ app.post('/v1/storage/benchmark', async (req, res) => {
     }
   }
 
-  profile = await discoverComputerProfile();
+  // The benchmark is exactly the thing that changes what discovery reports, so
+  // this is one of the few places worth paying for a fresh sweep.
+  profile = await discoverComputerProfile({ fresh: true });
   res.json({ results, failures, drives: profile.storageDrives });
 });
 
@@ -181,12 +200,46 @@ app.get('/v1/models/inspect', async (req, res) => {
 });
 
 app.post('/v1/models/load', async (req, res) => {
-  const { id } = req.body || {};
+  const { id, backendId } = req.body || {};
   if (!id) return fail(res, 400, new Error('Body field "id" is required.'));
   try {
-    const state = await inference.loadModel(String(id));
+    const state = await inference.loadModel(String(id), backendId ? String(backendId) : undefined);
     updateConfig({ activeModelId: String(id) });
     res.json(state);
+  } catch (err) {
+    fail(res, 400, err);
+  }
+});
+
+/**
+ * The launch plan for a model: what the runtime would choose, what the user
+ * has overridden, and what it costs. Available before loading, so a decision
+ * that takes minutes to act on can be made with the numbers in view.
+ */
+app.get('/v1/tuning', async (req, res) => {
+  const id = String(req.query.id || '');
+  if (!id) return fail(res, 400, new Error('Query parameter "id" is required.'));
+  try {
+    const plan = await inference.planForId(id);
+    res.json({
+      plan,
+      overrides: loadConfig().tuning,
+      presets: plan ? suggestPresets(plan) : [],
+    });
+  } catch (err) {
+    fail(res, 400, err);
+  }
+});
+
+/** Set or clear overrides. A null field hands the decision back to the runtime. */
+app.patch('/v1/tuning', async (req, res) => {
+  try {
+    const current = loadConfig().tuning;
+    const next = { ...current, ...(req.body?.overrides || {}) };
+    updateConfig({ tuning: next });
+
+    const id = req.body?.id ? String(req.body.id) : null;
+    res.json({ overrides: next, plan: id ? await inference.planForId(id) : null });
   } catch (err) {
     fail(res, 400, err);
   }
@@ -364,6 +417,7 @@ function buildOptions(body: ChatBody): GenerationOptions {
 }
 
 async function handleChatCompletion(body: ChatBody, res: Response): Promise<void> {
+  generationActive = true;
   try {
     // Honour an explicit model switch before generating; the request may name
     // the model by full id or by its short alias.
@@ -389,8 +443,6 @@ async function handleChatCompletion(body: ChatBody, res: Response): Promise<void
     res.on('close', () => abort.abort());
     options.signal = abort.signal;
 
-    generationActive = true;
-
     if (stream) {
       res.setHeader('Content-Type', 'text/event-stream');
       res.setHeader('Cache-Control', 'no-cache');
@@ -400,9 +452,6 @@ async function handleChatCompletion(body: ChatBody, res: Response): Promise<void
       const id = `chatcmpl-${Date.now()}`;
       const result = await backend.generateStream(options, (token) => {
         if (!token.token && !token.isFinished) return;
-        // Reasoning travels in `reasoning_content`, the field llama.cpp and
-        // DeepSeek-style clients already understand, so it never contaminates
-        // the assistant message.
         const delta = token.isFinished
           ? {}
           : token.kind === 'reasoning'
@@ -422,7 +471,6 @@ async function handleChatCompletion(body: ChatBody, res: Response): Promise<void
 
       inference.recordMetrics(result.metrics);
       lastGenerationAt = new Date().toISOString();
-      // Real measured timings travel with the stream so the UI never invents them.
       res.write(`event: metrics\ndata: ${JSON.stringify(result.metrics)}\n\n`);
       res.write('data: [DONE]\n\n');
       res.end();
@@ -459,9 +507,7 @@ async function handleChatCompletion(body: ChatBody, res: Response): Promise<void
       });
     }
   } catch (err) {
-    // A disconnected client is not an error to report; the abort was expected.
     if ((err as Error).name === 'AbortError' || res.destroyed) return;
-
     if (res.headersSent) {
       res.write(`event: error\ndata: ${JSON.stringify({ message: (err as Error).message })}\n\n`);
       res.end();

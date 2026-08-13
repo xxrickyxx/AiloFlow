@@ -94,18 +94,38 @@ export class HierarchicalCache {
   }
 
   private promoteToVram(entry: CacheEntry): void {
+    if (this.l0Vram.has(entry.tensorName)) return;
+
+    if (this.l1Ram.has(entry.tensorName)) {
+      this.l1Ram.delete(entry.tensorName);
+      this.ramUsedBytes = Math.max(0, this.ramUsedBytes - entry.sizeBytes);
+    }
+    if (this.l2Ssd.has(entry.tensorName)) {
+      this.l2Ssd.delete(entry.tensorName);
+    }
+
     // Evict cold tensors from VRAM if size limit exceeded
     while (this.vramUsedBytes + entry.sizeBytes > this.vramLimitBytes && this.l0Vram.size > 0) {
       this.evictFromVram();
     }
 
-    entry.tier = 'L0_VRAM';
-    entry.temperature = 'HOT';
-    this.l0Vram.set(entry.tensorName, entry);
-    this.vramUsedBytes += entry.sizeBytes;
+    if (this.vramUsedBytes + entry.sizeBytes <= this.vramLimitBytes || this.l0Vram.size === 0) {
+      entry.tier = 'L0_VRAM';
+      entry.temperature = 'HOT';
+      this.l0Vram.set(entry.tensorName, entry);
+      this.vramUsedBytes += entry.sizeBytes;
+    } else {
+      this.promoteToRam(entry);
+    }
   }
 
   private promoteToRam(entry: CacheEntry): void {
+    if (this.l1Ram.has(entry.tensorName)) return;
+
+    if (this.l2Ssd.has(entry.tensorName)) {
+      this.l2Ssd.delete(entry.tensorName);
+    }
+
     // Evict LRU entries from RAM if budget exceeded
     while (this.ramUsedBytes + entry.sizeBytes > this.ramLimitBytes && this.l1Ram.size > 0) {
       this.evictFromRam();

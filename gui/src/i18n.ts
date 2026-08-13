@@ -221,6 +221,35 @@ const en = {
   'chat.tokensNa': 'tok/s n/a',
   'chat.tokenCount': '{count} tokens',
 
+  // Runtime tuning
+  'tuning.title': 'RUNTIME TUNING',
+  'tuning.diskBound':
+    'This model is larger than your RAM, so most weights are read from disk on every token. Every setting below is really about what stays resident in memory.',
+  'tuning.fitsInMemory':
+    'This model fits in memory, so these settings affect quality and latency rather than whether it runs at all.',
+  'tuning.experts': 'Experts routed per token',
+  'tuning.modelDefault': '{n} (model default)',
+  'tuning.expertsEffect':
+    'Each token activates {active}B of {total}B parameters and reads {perToken} of weights. Fewer experts means proportionally fewer bytes — and lower output quality.',
+  'tuning.bytesPerToken': 'Bytes per token',
+  'tuning.activeParams': 'Active parameters',
+  'tuning.fromStorage': 'Read from disk',
+  'tuning.kvCache': 'KV cache',
+  'tuning.storageCeiling': 'Storage ceiling',
+  'tuning.gpuLayers': 'Layers on GPU',
+  'tuning.cpuMoeLayers': 'MoE layers kept on CPU',
+  'tuning.contextLength': 'Context window',
+  'tuning.threads': 'CPU threads',
+  'tuning.kvCacheType': 'KV cache precision',
+  'tuning.flashAttention': 'Flash attention',
+  'tuning.loadMode': 'Load mode',
+  'tuning.auto': 'auto',
+  'tuning.user': 'yours',
+  'tuning.backToAuto': 'Back to automatic',
+  'tuning.resetAll': 'Reset all to automatic',
+  'tuning.appliesOnLoad': 'Changes apply the next time the model is loaded.',
+  'tuning.engineDecides': 'engine',
+
   // Stop generation
   'stop.button': 'Stop generation',
   'stop.stopped': 'Engine stopped',
@@ -293,6 +322,7 @@ const en = {
   'models.noEngineForModel': 'No engine available for this model',
   'models.splitParts': '{n} files',
   'models.aggregatedOver': 'Totals aggregated over',
+  'models.loading': 'Loading… {seconds}s',
   'models.incompleteSet':
     'This model is published as a split file set and some parts are still missing, so it cannot be loaded yet. Finish the download from the Catalog tab.',
   'models.sweepLayers': 'Layers transferred',
@@ -508,6 +538,34 @@ const it: Record<TranslationKey, string> = {
   'chat.tokensNa': 'tok/s n/d',
   'chat.tokenCount': '{count} token',
 
+  'tuning.title': 'REGOLAZIONE DEL RUNTIME',
+  'tuning.diskBound':
+    'Questo modello supera la tua RAM, quindi la maggior parte dei pesi viene letta da disco a ogni token. Ogni impostazione qui sotto riguarda in realtà cosa resta residente in memoria.',
+  'tuning.fitsInMemory':
+    'Questo modello entra in memoria, quindi queste impostazioni incidono su qualità e latenza, non sulla possibilità di eseguirlo.',
+  'tuning.experts': 'Esperti attivati per token',
+  'tuning.modelDefault': '{n} (valore del modello)',
+  'tuning.expertsEffect':
+    'Ogni token attiva {active}B dei {total}B parametri e legge {perToken} di pesi. Meno esperti significa proporzionalmente meno byte — e qualità inferiore.',
+  'tuning.bytesPerToken': 'Byte per token',
+  'tuning.activeParams': 'Parametri attivi',
+  'tuning.fromStorage': 'Letti da disco',
+  'tuning.kvCache': 'KV cache',
+  'tuning.storageCeiling': 'Tetto dello storage',
+  'tuning.gpuLayers': 'Layer su GPU',
+  'tuning.cpuMoeLayers': 'Layer MoE tenuti su CPU',
+  'tuning.contextLength': 'Finestra di contesto',
+  'tuning.threads': 'Thread CPU',
+  'tuning.kvCacheType': 'Precisione KV cache',
+  'tuning.flashAttention': 'Flash attention',
+  'tuning.loadMode': 'Modalità di caricamento',
+  'tuning.auto': 'auto',
+  'tuning.user': 'tua',
+  'tuning.backToAuto': 'Torna ad automatico',
+  'tuning.resetAll': 'Riporta tutto ad automatico',
+  'tuning.appliesOnLoad': 'Le modifiche si applicano al prossimo caricamento del modello.',
+  'tuning.engineDecides': 'motore',
+
   'stop.button': 'Ferma generazione',
   'stop.stopped': 'Motore fermato',
   'stop.nothing': 'Niente in corso',
@@ -575,6 +633,7 @@ const it: Record<TranslationKey, string> = {
   'models.noEngineForModel': 'Nessun motore disponibile per questo modello',
   'models.splitParts': '{n} file',
   'models.aggregatedOver': 'Totali aggregati su',
+  'models.loading': 'Caricamento… {seconds}s',
   'models.incompleteSet':
     'Questo modello è pubblicato in più file e alcune parti mancano ancora, quindi non può essere caricato. Completa il download dalla scheda Catalogo.',
   'models.sweepLayers': 'Layer trasferiti',

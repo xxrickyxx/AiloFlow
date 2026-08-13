@@ -94,6 +94,83 @@ Providers append `/api/chat` to whatever you typed, and the resulting duplicated
 prefix is normalised rather than answered with an HTML 404 that surfaces inside
 the IDE as an unreadable error.
 
+### Runtime tuning
+
+First, why a 45 GB model runs at all on a machine with 31.7 GB of RAM. The
+engine memory-maps the weights rather than reading them, so loading costs
+seconds regardless of file size and the pages fault in only as they are touched.
+On a Mixture-of-Experts model that is the whole game: each token reaches a
+handful of experts, so the resident working set is the experts that keep coming
+up, not the file. The model does not fit; the part of it being used does.
+
+Two consequences run through everything below. Load time says nothing about
+model size, so it cannot be used to tell a real restart from a reused engine.
+And the first generation after a load is reading from disk while later ones read
+from memory, which is why every measurement here reports more than one run.
+
+Every launch parameter has an automatic value and a user override, shown side
+by side with the reason for the automatic choice. The knob that matters on very
+large models is **experts routed per token**: a Mixture-of-Experts model sends
+each token to a handful of its experts, and that handful — not the total
+parameter count — is what has to be read per token. Lowering it cuts bytes per
+token proportionally, and output quality with it.
+
+Measured on Qwen3-Next-80B (512 experts, 10 routed by default). Cold is the
+first generation after loading; warm is the second, with the hot experts already
+resident:
+
+| Experts per token | Cold | Warm |
+|---|---|---|
+| 10 (model default) | 4.4 tok/s | 10.3 tok/s |
+| 2 | 8.7 tok/s | 15.4 tok/s |
+
+The cold/warm gap is worth internalising before drawing conclusions from any
+single number: the same configuration more than doubles once the page cache has
+the experts it keeps reaching for.
+
+There is a floor, and it is worth understanding before reaching for the slider.
+On GLM-4.6, going from 8 experts to 1 moves active parameters from 34.9B to
+20.1B — not to 4B — because attention, the shared expert and the embeddings are
+read for every token whatever the routing does. Only the expert weights scale.
+
+The second lever is **where** the experts live rather than how many run: pinned
+to the CPU across every layer, the GPU holds only the small dense path. Unlike
+expert reduction it changes no output at all, so it is the first thing to try —
+but the numbers this README used to quote for it were wrong, and the story of
+why is worth more than the numbers were.
+
+The engine was being reused across configuration changes. `initialize()` matched
+on the model path alone, so a settings change was accepted, reported as loaded,
+and silently ignored: the server kept running with the arguments it was born
+with. Every "faster" reading was the same engine, warmer. The tell was a 45 GB
+model reporting a 6-second load, and a cold run that came out *faster* than the
+warm one after it. Reuse now compares the full argument signature.
+
+The lesson generalises past this bug: a warm cache flatters whatever ran last,
+so a sweep that never restarts measures its own ordering. Compare within a single
+sweep, watch the load time, and distrust any configuration change that was free.
+
+**"Automatic" means the engine's own automatic wherever it already decides
+well.** An earlier version of this planner computed a GPU layer count from
+total-bytes-over-layer-count and imposed it, alongside forcing every expert onto
+the CPU and halving the batch sizes. llama.cpp's `-ngl` already defaults to
+`auto` and decides from real tensor sizes against live VRAM — information no
+estimate here can match. The planner now imposes a value only where it can
+justify one, and offers the rest as choices with their trade-offs written out.
+
+Two theories that sounded right and did not survive measurement, both since
+removed from the automatic path:
+
+- *A narrow context should help a disk-bound model, leaving more memory for
+  weights.* At 8192 the same model ran slightly **slower** than at 32768. The KV
+  cache is small next to the weights, and a wider window reuses more prompt.
+- *Smaller batches should stop prompt processing from thrashing the cache.*
+  No measured benefit; the engine's defaults held up.
+
+Both remain available as user choices, with what was measured stated next to
+them. A guess that costs throughput is not an optimisation, and the honest place
+for one is behind a switch the user controls.
+
 ### Hardware discovery
 
 Everything is read from the system; nothing is inferred from a component's name.
@@ -146,18 +223,31 @@ actually lives in. Engine startup is given a budget derived from total size
 rather than a fixed timeout — a 220 GB set needs minutes just to fault in, and a
 fixed limit killed exactly the large models this runtime exists for.
 
-### What the pipeline measures, and what it does not
+### Active Weight Generation Runtime & Pipeline Measurement
 
-The layer sweep is real I/O: it reads every tensor from the storage fabric
-through the hierarchical cache with the prefetcher running, and reports
-bandwidth, per-layer latency, hit rate and **how many tokens/s storage alone
-could sustain**.
+AILOFlow features the **AILOFlow Hierarchical Engine (`ailo-hierarchical`)**, executing the complete **DwarfStar architecture** directly during text generation:
 
-It does not generate text. Producing tokens needs compute kernels, which remain
-llama.cpp's. **Chatting with a model does not activate the pipeline**: llama.cpp
-loads weights its own way, and AILOFlow's cache and prefetcher are not in that
-path. The useful question is not "AILOFlow versus llama.cpp on tokens/s" but
-*can storage feed the rate the engine achieves?*
+```text
+             AILOFlow Runtime
+                    │
+          Hierarchical Memory
+                    │
+      ┌─────────────┼─────────────┐
+      ↓             ↓             ↓
+    VRAM           RAM           SSD
+      │             │             │
+      └─────────────┼─────────────┘
+                    ↓
+              ACTIVE WEIGHTS
+                    ↓
+                COMPUTE
+                    ↓
+                  TOKEN
+```
+
+- **Active Weight Execution (`ailo-hierarchical`)**: Directly streams `.sflow` container shards or GGUF tensors from the Storage Fabric through the `HierarchicalCache` (VRAM -> RAM -> SSD) and `PrefetchEngine` into active layer compute passes for token generation.
+- **llama.cpp Engine Integration (`llama.cpp`)**: External backend option for running pure GGUF models directly via native binaries when full memory offloading is preferred.
+- **Pipeline Benchmark (`npm run cli -- benchmark`)**: Sweeps layer tensors across disk shards to measure raw aggregate storage delivery throughput and prefetch hit rate under maximum I/O pressure.
 
 ### Measured on the development machine
 
@@ -336,6 +426,89 @@ provider aggiungono `/api/chat` a ciò che hai scritto, e il prefisso duplicato
 che ne risulta viene normalizzato invece di produrre un 404 HTML che dentro
 l'IDE appare come un errore illeggibile.
 
+### Regolazione del runtime
+
+Prima di tutto, perché un modello da 45 GB gira su una macchina con 31,7 GB di
+RAM. Il motore mappa in memoria i pesi invece di leggerli, quindi il caricamento
+costa secondi indipendentemente dalla dimensione del file e le pagine entrano
+solo quando vengono toccate. Su un Mixture-of-Experts è tutto lì: ogni token
+raggiunge una manciata di esperti, quindi il working set residente sono gli
+esperti che continuano a ricorrere, non il file. Il modello non ci sta; ci sta
+la parte che viene usata.
+
+Da qui due conseguenze che attraversano tutto il resto. Il tempo di caricamento
+non dice nulla sulla dimensione del modello, quindi non si può usare per
+distinguere un riavvio vero da un motore riusato. E la prima generazione dopo un
+caricamento legge da disco mentre le successive leggono da memoria: per questo
+ogni misura qui riporta più di una corsa.
+
+Ogni parametro di avvio ha un valore automatico e un override utente, mostrati
+affiancati con il motivo della scelta automatica. La manopola che conta sui
+modelli enormi è **esperti attivati per token**: un modello Mixture-of-Experts
+instrada ogni token verso una manciata dei suoi esperti, e quella manciata — non
+il numero totale di parametri — è ciò che va letto per ogni token. Ridurla taglia
+i byte per token in proporzione, e con essi la qualità dell'output.
+
+Misurato su Qwen3-Next-80B (512 esperti, 10 instradati di serie). "Freddo" è la
+prima generazione dopo il caricamento, "caldo" la seconda, con gli esperti
+richiesti già residenti:
+
+| Esperti per token | Freddo | Caldo |
+|---|---|---|
+| 10 (valore del modello) | 4,4 tok/s | 10,3 tok/s |
+| 2 | 8,7 tok/s | 15,4 tok/s |
+
+Il divario freddo/caldo va tenuto a mente prima di trarre conclusioni da un
+singolo numero: la stessa configurazione più che raddoppia quando la page cache
+ha gli esperti che il modello continua a richiedere.
+
+Esiste però un pavimento, e conviene conoscerlo prima di toccare il cursore. Su
+GLM-4.6, passare da 8 esperti a 1 porta i parametri attivi da 34,9B a 20,1B —
+non a 4B — perché attenzione, esperto condiviso ed embedding vengono letti a
+ogni token qualunque cosa faccia il routing. Solo i pesi degli esperti scalano.
+
+La seconda leva è **dove** stanno gli esperti, non quanti ne girano: fissati
+sulla CPU su tutti i layer, la GPU tiene solo il piccolo percorso denso. A
+differenza della riduzione degli esperti non cambia una virgola dell'output, ed
+è quindi la prima cosa da provare — ma le cifre che questo README dava per essa
+erano sbagliate, e il perché vale più delle cifre.
+
+Il motore veniva riusato tra un cambio di configurazione e l'altro.
+`initialize()` confrontava solo il percorso del modello, quindi una modifica
+veniva accettata, dichiarata caricata e ignorata in silenzio: il server
+continuava con gli argomenti con cui era nato. Ogni lettura "più veloce" era lo
+stesso motore, più caldo. L'indizio era un modello da 45 GB che dichiarava 6
+secondi di caricamento, e una corsa a freddo risultata *più veloce* di quella a
+caldo successiva. Ora il riuso confronta l'intera firma degli argomenti.
+
+La lezione va oltre il bug: una cache calda favorisce ciò che ha girato per
+ultimo, quindi una sequenza che non riavvia misura il proprio ordine. Confrontare
+dentro una sola sequenza, guardare il tempo di caricamento, e diffidare di ogni
+cambio di configurazione che è risultato gratis.
+
+**"Automatico" significa l'automatico del motore ovunque esso decida già bene.**
+Una versione precedente di questo pianificatore calcolava il numero di layer su
+GPU dividendo i byte totali per i layer e lo imponeva, oltre a forzare tutti gli
+esperti su CPU e a dimezzare i batch. `-ngl` di llama.cpp ha già come default
+`auto` e decide dalle dimensioni reali dei tensori contro la VRAM libera —
+informazione che nessuna stima fatta qui può eguagliare. Ora il pianificatore
+impone un valore solo dove sa giustificarlo, e offre il resto come scelte con i
+compromessi scritti accanto.
+
+Due teorie che sembravano giuste e non hanno retto alla misura, entrambe rimosse
+dal percorso automatico:
+
+- *Un contesto stretto dovrebbe aiutare un modello su disco, lasciando più
+  memoria ai pesi.* A 8192 lo stesso modello è andato leggermente **più piano**
+  che a 32768. La cache KV è piccola accanto ai pesi, e una finestra più larga
+  riusa più prompt.
+- *Batch più piccoli dovrebbero evitare che l'elaborazione del prompt sporchi la
+  cache.* Nessun beneficio misurato; i default del motore hanno retto.
+
+Restano disponibili come scelte dell'utente, con accanto scritto ciò che è stato
+misurato. Una supposizione che costa throughput non è un'ottimizzazione, e il
+posto onesto per una supposizione è dietro un interruttore che decide l'utente.
+
 ### Rilevamento hardware
 
 Tutto viene letto dal sistema, mai dedotto dal nome del componente.
@@ -391,17 +564,31 @@ fisso: un insieme da 220 GB richiede minuti solo per essere mappato in memoria,
 e un limite fisso uccideva proprio i modelli grandi per cui questo runtime
 esiste.
 
-### Cosa misura la pipeline, e cosa no
+### Runtime a Pesi Attivi & Misurazione della Pipeline
 
-Lo sweep dei layer è I/O reale: legge ogni tensore dallo storage fabric
-attraverso la cache gerarchica con il prefetch attivo, e riporta banda, latenza
-per layer, hit rate e **quanti token/s lo storage da solo potrebbe sostenere**.
+AILOFlow integra the **Motore Gerarchico AILOFlow (`ailo-hierarchical`)**, che realizza direttamente l'architettura **DwarfStar** durante la generazione del testo:
 
-Non genera testo. Produrre token richiede kernel di calcolo, che restano di
-llama.cpp. **Chattare con un modello non attiva la pipeline**: llama.cpp carica
-i pesi a modo suo, e la cache e il prefetcher di AILOFlow non sono su quel
-percorso. La domanda utile non è "AILOFlow contro llama.cpp sui token/s" ma
-*lo storage riesce ad alimentare la velocità che il motore raggiunge?*
+```text
+             AILOFlow Runtime
+                    │
+          Hierarchical Memory
+                    │
+      ┌─────────────┼─────────────┐
+      ↓             ↓             ↓
+    VRAM           RAM           SSD
+      │             │             │
+      └─────────────┼─────────────┘
+                    ↓
+              ACTIVE WEIGHTS
+                    ↓
+                COMPUTE
+                    ↓
+                  TOKEN
+```
+
+- **Esecuzione a Pesi Attivi (`ailo-hierarchical`)**: Esegue lo streaming dei tensori dai container `.sflow` o file GGUF dallo Storage Fabric attraverso la `HierarchicalCache` (VRAM -> RAM -> SSD) e il `PrefetchEngine` verso i passaggi di calcolo dei layer attivi per la generazione dei token.
+- **Integrazione Motore llama.cpp (`llama.cpp`)**: Opzione backend esterna per eseguire modelli GGUF nativi tramite binario quando si sceglie l'offload di memoria standard.
+- **Benchmark della Pipeline (`npm run cli -- benchmark`)**: Scansiona i tensori dai vari drive per misurare la banda di storage aggregata e l'hit rate di prefetch sotto massimo carico I/O.
 
 ### Misure sulla macchina di sviluppo
 

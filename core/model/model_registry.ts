@@ -23,7 +23,7 @@ export interface DiscoveredModel {
   /** Real byte size from the filesystem, or null when unknown. */
   fileSizeBytes: number | null;
   /** Engines that can actually execute this model right now. */
-  runnableWith: Array<'ollama' | 'llama.cpp'>;
+  runnableWith: Array<'ollama' | 'llama.cpp' | 'ailo-hierarchical'>;
   /** True when the GGUF header can be parsed for detailed metadata. */
   inspectable: boolean;
   modifiedAt: string | null;
@@ -333,8 +333,12 @@ export function discoverFileModels(directories: string[], maxDepth = 3): Discove
       displayName: path.basename(filePath),
       filePath,
       fileSizeBytes: stats ? stats.size : null,
-      // .sflow is an AILOFlow container; llama.cpp only executes raw GGUF.
-      runnableWith: !isSflow && llamaAvailable ? (['llama.cpp'] as Array<'llama.cpp'>) : [],
+      // .sflow is an AILOFlow container executed via AILOFlow Active Weight Engine; GGUF supports both llama.cpp and AILOFlow engine.
+      runnableWith: isSflow
+        ? (['ailo-hierarchical'] as Array<'ailo-hierarchical'>)
+        : llamaAvailable
+        ? (['llama.cpp', 'ailo-hierarchical'] as Array<'llama.cpp' | 'ailo-hierarchical'>)
+        : (['ailo-hierarchical'] as Array<'ailo-hierarchical'>),
       inspectable: isSflow ? true : isGgufFile(filePath),
       modifiedAt: stats ? stats.mtime.toISOString() : null,
       splitParts: null,

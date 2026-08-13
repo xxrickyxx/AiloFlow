@@ -593,7 +593,48 @@ export async function discoverStorage(): Promise<StorageDriveInfo[]> {
   return drives;
 }
 
-export async function discoverComputerProfile(): Promise<ComputerProfile> {
+/**
+ * Discovery is expensive: it shells out to PowerShell several times and takes
+ * seconds — occasionally tens of seconds — to come back. The hardware it
+ * describes does not change between two requests a second apart, so a request
+ * that only needs to know what the machine is gets the last answer.
+ *
+ * This is what made the tuning panel unusable: every slider movement rebuilt
+ * the plan, every plan rediscovered the machine, and the interface sat waiting
+ * on PowerShell to re-enumerate disks that had not moved.
+ */
+const PROFILE_TTL_MS = 60_000;
+let cachedProfile: { profile: ComputerProfile; at: number } | null = null;
+let profileInFlight: Promise<ComputerProfile> | null = null;
+
+/** Drop the cached profile, for when something is known to have changed. */
+export function invalidateProfileCache(): void {
+  cachedProfile = null;
+}
+
+export async function discoverComputerProfile(options?: { fresh?: boolean }): Promise<ComputerProfile> {
+  if (options?.fresh) cachedProfile = null;
+
+  const fresh = cachedProfile && Date.now() - cachedProfile.at < PROFILE_TTL_MS;
+  if (fresh && cachedProfile) return cachedProfile.profile;
+
+  // Concurrent callers share one discovery rather than each starting their own
+  // storm of PowerShell processes.
+  if (profileInFlight) return profileInFlight;
+
+  profileInFlight = buildComputerProfile()
+    .then((profile) => {
+      cachedProfile = { profile, at: Date.now() };
+      return profile;
+    })
+    .finally(() => {
+      profileInFlight = null;
+    });
+
+  return profileInFlight;
+}
+
+async function buildComputerProfile(): Promise<ComputerProfile> {
   const [cpu, ram, gpus, storageDrives] = await Promise.all([
     discoverCpu(),
     discoverRam(),

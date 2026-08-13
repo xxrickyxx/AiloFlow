@@ -35,6 +35,12 @@ export interface AiloConfig {
    * llama.cpp default of 4096 is far too small in practice.
    */
   contextLength: number | null;
+  /**
+   * Runtime tuning overrides. Every field is null by default, meaning the
+   * runtime decides from the detected hardware; setting one hands that
+   * decision to the user.
+   */
+  tuning: TuningOverridesRecord;
   /** Cached storage benchmark results keyed by drive mount point. */
   storageBenchmarks: Record<string, StoredBenchmark>;
   /** The llama.cpp build AILOFlow installed and manages itself. */
@@ -48,6 +54,38 @@ export interface AiloConfig {
    * opens it up, because doing so exposes local models to the network.
    */
   apiHost: string;
+}
+
+/**
+ * Mirrors TuningOverrides. Declared here rather than imported so the config
+ * module stays free of dependencies on the tuning logic it merely stores.
+ */
+export interface TuningOverridesRecord {
+  expertsPerToken: number | null;
+  gpuLayers: number | null;
+  cpuMoeLayers: number | null;
+  contextLength: number | null;
+  kvCacheType: 'f16' | 'q8_0' | 'q4_0' | null;
+  threads: number | null;
+  batchSize: number | null;
+  ubatchSize: number | null;
+  flashAttention: 'auto' | 'on' | 'off' | null;
+  loadMode: 'mmap' | 'mlock' | 'mmap+mlock' | null;
+}
+
+export function emptyTuningOverrides(): TuningOverridesRecord {
+  return {
+    expertsPerToken: null,
+    gpuLayers: null,
+    cpuMoeLayers: null,
+    contextLength: null,
+    kvCacheType: null,
+    threads: null,
+    batchSize: null,
+    ubatchSize: null,
+    flashAttention: null,
+    loadMode: null,
+  };
 }
 
 export interface InstalledEngineRecord {
@@ -112,6 +150,7 @@ export function createDefaultConfig(): AiloConfig {
     backendOverride: null,
     gpuLayers: null,
     contextLength: null,
+    tuning: emptyTuningOverrides(),
     storageBenchmarks: {},
     installedEngine: null,
     downloadDirectory: null,
@@ -131,7 +170,13 @@ export function loadConfig(): AiloConfig {
   try {
     const raw = fs.readFileSync(configPath, 'utf8');
     const parsed = JSON.parse(raw) as Partial<AiloConfig>;
-    cached = { ...defaults, ...parsed };
+    // Merge tuning field by field: a config written before a knob existed must
+    // gain it as "auto" rather than as undefined.
+    cached = {
+      ...defaults,
+      ...parsed,
+      tuning: { ...emptyTuningOverrides(), ...(parsed.tuning || {}) },
+    };
   } catch {
     // No config yet (or unreadable) — start from defaults and persist them.
     cached = defaults;

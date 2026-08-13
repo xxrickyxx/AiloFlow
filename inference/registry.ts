@@ -1,8 +1,13 @@
 import { loadConfig } from '../core/config/config.js';
+import { discoverComputerProfile } from '../core/hardware/discovery.js';
+import { parseGgufModel } from '../core/model/gguf_parser.js';
 import { DiscoveredModel, findModelById } from '../core/model/model_registry.js';
+import { TuningPlan, buildTuningPlan, describeModel } from '../core/tuning/runtime_tuning.js';
 import { BackendAvailability, GenerationMetrics, InferenceBackend } from './base.js';
 import { LlamaCppBackend } from './llama_cpp/llama_cpp_backend.js';
 import { OllamaBackend } from './ollama/ollama_backend.js';
+
+import { AiloHierarchicalBackend } from './ailo_hierarchical/ailo_hierarchical_backend.js';
 
 export interface LoadedModelState {
   model: DiscoveredModel;
@@ -19,6 +24,7 @@ export interface LoadedModelState {
  * if nothing can run the model, loading fails with an explanation.
  */
 export class InferenceRegistry {
+  private ailoHierarchical = new AiloHierarchicalBackend();
   private llamaCpp = new LlamaCppBackend();
   private ollama: OllamaBackend;
 
@@ -32,7 +38,10 @@ export class InferenceRegistry {
 
   public async listAvailability(): Promise<BackendAvailability[]> {
     const config = loadConfig();
-    const results: BackendAvailability[] = [await this.llamaCpp.checkAvailability()];
+    const results: BackendAvailability[] = [
+      await this.ailoHierarchical.checkAvailability(),
+      await this.llamaCpp.checkAvailability(),
+    ];
 
     if (config.ollamaEnabled) {
       results.push(await this.ollama.checkAvailability());
@@ -52,6 +61,46 @@ export class InferenceRegistry {
     return this.state;
   }
 
+  /**
+   * Build the tuning plan for a model without loading it.
+   *
+   * Exposed so the interface can show the consequences of a setting — bytes per
+   * token, active parameters, what will not fit in RAM — before the user
+   * commits to a load that may take minutes.
+   */
+  public async planFor(model: DiscoveredModel): Promise<TuningPlan | null> {
+    if (!model.filePath || model.source === 'sflow') return null;
+
+    try {
+      const meta = parseGgufModel(model.filePath);
+      const totalBytes = model.fileSizeBytes ?? meta.fileSizeBytes;
+      const shape = describeModel(meta, totalBytes);
+      const profile = await discoverComputerProfile();
+
+      const measured = profile.storageDrives.filter((d) => d.performanceProfile?.measured);
+      const storageBandwidthMBps = measured.length
+        ? measured.reduce((sum, d) => sum + (d.performanceProfile?.seqReadMBps || 0), 0)
+        : null;
+
+      return buildTuningPlan({
+        profile,
+        model: shape,
+        overrides: loadConfig().tuning,
+        storageBandwidthMBps,
+      });
+    } catch {
+      // Metadata unreadable: the engine falls back to its own defaults rather
+      // than being handed a plan built on guesses.
+      return null;
+    }
+  }
+
+  public async planForId(modelId: string): Promise<TuningPlan | null> {
+    const model = await findModelById(modelId);
+    if (!model) throw new Error(`Model not found: ${modelId}`);
+    return this.planFor(model);
+  }
+
   public getLastMetrics(): GenerationMetrics | null {
     return this.lastMetrics;
   }
@@ -61,7 +110,7 @@ export class InferenceRegistry {
   }
 
   /** Load a model into a real engine chosen from what the model supports. */
-  public async loadModel(modelId: string): Promise<LoadedModelState> {
+  public async loadModel(modelId: string, preferredBackendId?: string): Promise<LoadedModelState> {
     const model = await findModelById(modelId);
     if (!model) throw new Error(`Model not found: ${modelId}`);
 
@@ -70,7 +119,10 @@ export class InferenceRegistry {
     let backend: InferenceBackend;
     let ref: string;
 
-    if (model.source === 'ollama') {
+    if (preferredBackendId === 'ailo-hierarchical' || model.source === 'sflow') {
+      backend = this.ailoHierarchical;
+      ref = model.filePath || model.id;
+    } else if (model.source === 'ollama') {
       const availability = await this.ollama.checkAvailability();
       if (!availability.available) {
         throw new Error(availability.reason || 'Ollama backend is unavailable.');
@@ -78,19 +130,21 @@ export class InferenceRegistry {
       backend = this.ollama;
       ref = model.id;
     } else if (model.source === 'gguf') {
-      const availability = await this.llamaCpp.checkAvailability();
-      if (!availability.available) {
-        throw new Error(availability.reason || 'llama.cpp backend is unavailable.');
+      const llamaAvailability = await this.llamaCpp.checkAvailability();
+      if (llamaAvailability.available) {
+        if (!model.filePath) throw new Error(`GGUF model has no file path: ${modelId}`);
+
+        this.llamaCpp.setTuningPlan(await this.planFor(model));
+        backend = this.llamaCpp;
+        ref = model.filePath;
+      } else {
+        // Fallback to AILOFlow Native Hierarchical Engine if llama.cpp server is not installed
+        backend = this.ailoHierarchical;
+        ref = model.filePath || model.id;
       }
-      if (!model.filePath) throw new Error(`GGUF model has no file path: ${modelId}`);
-      backend = this.llamaCpp;
-      ref = model.filePath;
     } else {
-      throw new Error(
-        '.sflow containers describe how a model is sharded across storage; they are not directly ' +
-          'executable. Load the source GGUF for generation, and use the storage pipeline benchmark ' +
-          'to measure the .sflow container.'
-      );
+      backend = this.ailoHierarchical;
+      ref = model.filePath || model.id;
     }
 
     if (this.active && this.active !== backend) {

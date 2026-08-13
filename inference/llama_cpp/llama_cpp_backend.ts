@@ -14,6 +14,7 @@ import { execSync } from 'child_process';
 import { loadConfig } from '../../core/config/config.js';
 import { getEngineDirectory } from '../../core/engine/engine_installer.js';
 import { parseGgufHeader } from '../../core/model/gguf_parser.js';
+import { TuningPlan, tuningToEngineArgs } from '../../core/tuning/runtime_tuning.js';
 
 const BINARY_NAMES = os.platform() === 'win32'
   ? ['llama-server.exe', 'server.exe']
@@ -87,8 +88,44 @@ const DEFAULT_MAX_CONTEXT = 32768;
  * llama-server the user runs themselves is none of our business.
  */
 export function killOrphanedEngines(): number {
-  const engineRoot = getEngineDirectory().toLowerCase();
   let killed = 0;
+  for (const pid of listOwnEngines()) {
+    try {
+      process.kill(pid);
+      killed++;
+    } catch {
+      // Already gone, or not ours to kill.
+    }
+  }
+  return killed;
+}
+
+/**
+ * Kill leftover engines and wait until they are actually gone.
+ *
+ * `process.kill` only delivers the signal; a llama-server holding tens of
+ * gigabytes takes seconds to unmap them and hand the VRAM back. Spawning the
+ * replacement in that window makes it fail to allocate, which surfaced as an
+ * intermittent, unexplained startup crash whenever a large model was reloaded
+ * with different settings. Waiting for the old process to disappear is what
+ * makes back-to-back reconfiguration reliable.
+ */
+export async function killOrphanedEnginesAndWait(timeoutMs = 30000): Promise<number> {
+  const killed = killOrphanedEngines();
+  if (killed === 0) return 0;
+
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (listOwnEngines().length === 0) return killed;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  return killed;
+}
+
+/** PIDs of running llama-server processes that came out of our engines directory. */
+function listOwnEngines(): number[] {
+  const engineRoot = getEngineDirectory().toLowerCase();
+  const pids: number[] = [];
 
   try {
     if (os.platform() === 'win32') {
@@ -101,12 +138,7 @@ export function killOrphanedEngines(): number {
       for (const proc of Array.isArray(parsed) ? parsed : parsed ? [parsed] : []) {
         const execPath = String(proc.ExecutablePath || '').toLowerCase();
         if (!execPath.startsWith(engineRoot)) continue;
-        try {
-          process.kill(Number(proc.ProcessId));
-          killed++;
-        } catch {
-          // Already gone, or not ours to kill.
-        }
+        pids.push(Number(proc.ProcessId));
       }
     } else {
       const output = execSync('pgrep -f llama-server || true', { encoding: 'utf8', timeout: 5000 });
@@ -116,8 +148,7 @@ export function killOrphanedEngines(): number {
         try {
           const exe = fs.readlinkSync(`/proc/${pid}/exe`).toLowerCase();
           if (!exe.startsWith(engineRoot)) continue;
-          process.kill(pid);
-          killed++;
+          pids.push(pid);
         } catch {
           // Not inspectable or already gone.
         }
@@ -127,7 +158,7 @@ export function killOrphanedEngines(): number {
     // Enumeration unavailable; a stale engine will surface as a spawn failure.
   }
 
-  return killed;
+  return pids;
 }
 
 let cleanupRegistered = false;
@@ -164,27 +195,30 @@ function registerEngineCleanup(): void {
  * model spread over several files on a SATA array is far slower to fault in
  * than one on NVMe, and being wrong here kills a load that was going to work.
  */
-function startupBudgetMs(modelPath: string): number {
-  let totalBytes = 0;
-
+/** Total bytes of the model on disk, counting every part of a split set. */
+function modelTotalBytes(modelPath: string): number {
   try {
-    // Split sets are loaded whole, so every sibling counts towards the wait.
     const dir = path.dirname(modelPath);
     const base = path.basename(modelPath);
     const split = base.match(/^(.*)-(\d{5})-of-(\d{5})\.gguf$/i);
 
-    if (split) {
-      for (const entry of fs.readdirSync(dir)) {
-        if (entry.startsWith(`${split[1]}-`) && entry.toLowerCase().endsWith('.gguf')) {
-          totalBytes += fs.statSync(path.join(dir, entry)).size;
-        }
+    if (!split) return fs.statSync(modelPath).size;
+
+    let total = 0;
+    for (const entry of fs.readdirSync(dir)) {
+      if (entry.startsWith(`${split[1]}-`) && entry.toLowerCase().endsWith('.gguf')) {
+        total += fs.statSync(path.join(dir, entry)).size;
       }
-    } else {
-      totalBytes = fs.statSync(modelPath).size;
     }
+    return total;
   } catch {
-    return 300_000;
+    return 0;
   }
+}
+
+function startupBudgetMs(modelPath: string): number {
+  const totalBytes = modelTotalBytes(modelPath);
+  if (totalBytes === 0) return 300_000;
 
   // 100 MB/s is well below any SSD, leaving room for a cold cache and a busy
   // disk; floor at five minutes, cap at one hour.
@@ -192,18 +226,34 @@ function startupBudgetMs(modelPath: string): number {
   return Math.min(3_600_000, Math.max(300_000, Math.round(estimated * 1.5)));
 }
 
+/**
+ * Ceiling used when the model is larger than physical RAM.
+ *
+ * A disk-bound model lives or dies by the page cache: every expert kept warm
+ * in memory is a read the next token does not pay for. The KV cache competes
+ * for exactly that memory, and at 32k context over ~90 layers it claims
+ * multiple gigabytes that would otherwise hold hot weights. A narrower window
+ * costs prompt length; the wide one costs seconds per token. On a machine
+ * where the model is several times the RAM, that trade is not close.
+ */
+const DISK_BOUND_MAX_CONTEXT = 8192;
+
 /** Choose the context window: explicit setting, else the model's own maximum, capped. */
 function resolveContextLength(modelPath: string, configured: number | null): number {
+  // An explicit setting always wins — the user may know their prompts.
   if (configured !== null && configured > 0) return configured;
+
+  const diskBound = modelTotalBytes(modelPath) > os.totalmem() * 0.9;
+  const cap = diskBound ? DISK_BOUND_MAX_CONTEXT : DEFAULT_MAX_CONTEXT;
 
   try {
     const meta = parseGgufHeader(modelPath);
-    if (meta.contextLength > 0) return Math.min(meta.contextLength, DEFAULT_MAX_CONTEXT);
+    if (meta.contextLength > 0) return Math.min(meta.contextLength, cap);
   } catch {
     // Header unreadable — fall through to the default.
   }
 
-  return DEFAULT_MAX_CONTEXT;
+  return cap;
 }
 
 /**
@@ -218,10 +268,23 @@ export class LlamaCppBackend implements InferenceBackend {
   private proc: ChildProcess | null = null;
   private port = 0;
   private modelPath = '';
+  /** Tuning arguments the running engine was started with, for reuse checks. */
+  private launchSignature = '';
   private startupLog: string[] = [];
   private contextLength = 0;
   /** Abort handle for the generation currently in flight, if any. */
   private activeRun: AbortController | null = null;
+  /** Tuning plan to start the next model with; set by the registry. */
+  private tuningPlan: TuningPlan | null = null;
+
+  /** Hand the engine the plan it should launch with. */
+  public setTuningPlan(plan: TuningPlan | null): void {
+    this.tuningPlan = plan;
+  }
+
+  public getTuningPlan(): TuningPlan | null {
+    return this.tuningPlan;
+  }
 
   public async checkAvailability(): Promise<BackendAvailability> {
     const binary = detectLlamaServerBinary();
@@ -242,9 +305,6 @@ export class LlamaCppBackend implements InferenceBackend {
   public async initialize(modelRef: string): Promise<boolean> {
     const modelPath = modelRef.startsWith('gguf:') ? modelRef.slice('gguf:'.length) : modelRef;
 
-    if (this.proc && this.modelPath === modelPath) return true;
-    if (this.proc) await this.dispose();
-
     const binary = detectLlamaServerBinary();
     if (!binary) {
       throw new Error(
@@ -257,26 +317,45 @@ export class LlamaCppBackend implements InferenceBackend {
     }
 
     const config = loadConfig();
+
+    // The tuning plan decides every engine argument from the machine and the
+    // model, with the user's overrides on top. Falling back to a bare context
+    // setting only happens when the model's metadata cannot be read.
+    const plan = this.tuningPlan;
+    let tuningArgs: string[];
+    let contextLength: number;
+
+    if (plan) {
+      contextLength = plan.contextLength.effective;
+      tuningArgs = tuningToEngineArgs(plan);
+    } else {
+      contextLength = resolveContextLength(modelPath, config.contextLength);
+      // llama.cpp defaults to 4096, which an IDE assistant blows past with its
+      // system prompt alone. The window is fixed once the server starts.
+      tuningArgs = ['--ctx-size', String(contextLength)];
+      if (config.gpuLayers !== null) tuningArgs.push('--n-gpu-layers', String(config.gpuLayers));
+    }
+
+    // Reuse the running engine only when it was started the same way. Matching
+    // on the model path alone meant a settings change was accepted, reported as
+    // loaded, and quietly ignored — the engine kept running with the arguments
+    // it was born with, and every measurement of the new setting was a
+    // measurement of the old one.
+    const signature = tuningArgs.join(' ');
+    if (this.proc && this.modelPath === modelPath && this.launchSignature === signature) return true;
+    if (this.proc) await this.dispose();
+
     this.port = await findFreePort();
     this.modelPath = modelPath;
+    this.contextLength = contextLength;
+    this.launchSignature = signature;
     this.startupLog = [];
 
-    const contextLength = resolveContextLength(modelPath, config.contextLength);
-    this.contextLength = contextLength;
+    const args = ['--model', modelPath, '--host', '127.0.0.1', '--port', String(this.port), ...tuningArgs];
 
-    const args = [
-      '--model', modelPath,
-      '--host', '127.0.0.1',
-      '--port', String(this.port),
-      // llama.cpp defaults to 4096, which an IDE assistant blows past with its
-      // system prompt alone. The window is fixed once the server starts, so it
-      // has to be sized correctly here rather than per request.
-      '--ctx-size', String(contextLength),
-    ];
-    if (config.gpuLayers !== null) args.push('--n-gpu-layers', String(config.gpuLayers));
-
-    // A previous engine still holding the GPU would make this spawn fail.
-    killOrphanedEngines();
+    // A previous engine still holding the GPU would make this spawn fail, and
+    // it does not release it the instant it is signalled.
+    await killOrphanedEnginesAndWait();
 
     this.proc = spawn(binary, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
     registerEngineCleanup();
@@ -289,8 +368,30 @@ export class LlamaCppBackend implements InferenceBackend {
     this.proc.stdout?.on('data', capture);
     this.proc.stderr?.on('data', capture);
 
+    // An engine that rejects an argument dies in tens of milliseconds, and the
+    // 'exit' event can beat the final 'data' events out of the pipes — which
+    // used to leave the thrown error holding half a line of banner and none of
+    // the actual complaint. Wait for both streams to close before reading the
+    // log, so the reason survives.
     let exited = false;
-    this.proc.on('exit', () => { exited = true; });
+    let exitCode: number | null = null;
+    let openStreams = 2;
+    const drained = new Promise<void>((resolve) => {
+      const done = () => { if (--openStreams <= 0) resolve(); };
+      this.proc?.stdout?.on('close', done);
+      this.proc?.stderr?.on('close', done);
+    });
+    this.proc.on('exit', (code) => { exited = true; exitCode = code; });
+
+    const exitReport = async (): Promise<string> => {
+      await Promise.race([drained, new Promise((r) => setTimeout(r, 2000))]);
+      const tail = this.startupLog.join('').trimEnd().slice(-2000);
+      const status = exitCode === null ? 'was terminated' : `exited with code ${exitCode}`;
+      return tail
+        ? `llama-server ${status} during startup. Engine output:\n${tail}`
+        : `llama-server ${status} during startup without producing any output. ` +
+          `Arguments: ${args.join(' ')}`;
+    };
 
     // llama.cpp loads weights before serving; poll /health until it is ready.
     //
@@ -300,11 +401,7 @@ export class LlamaCppBackend implements InferenceBackend {
     // models this runtime exists for.
     const deadline = Date.now() + startupBudgetMs(modelPath);
     while (Date.now() < deadline) {
-      if (exited) {
-        throw new Error(
-          `llama-server exited during startup. Last output:\n${this.startupLog.join('').slice(-1500)}`
-        );
-      }
+      if (exited) throw new Error(await exitReport());
       try {
         const res = await fetch(`http://127.0.0.1:${this.port}/health`);
         if (res.ok) return true;
@@ -458,12 +555,22 @@ export class LlamaCppBackend implements InferenceBackend {
   }
 
   public async dispose(): Promise<void> {
-    if (this.proc) {
-      this.proc.kill();
-      this.proc = null;
-    }
+    const proc = this.proc;
+    this.proc = null;
     this.port = 0;
     this.modelPath = '';
+    this.launchSignature = '';
+
+    if (!proc) return;
+
+    // Return only once the memory is actually back. An unload that resolves
+    // while tens of gigabytes are still mapped makes the next load — or the
+    // user watching the VRAM gauge — see a machine that has not freed anything.
+    const exited = new Promise<void>((resolve) => {
+      proc.once('exit', () => resolve());
+    });
+    proc.kill();
+    await Promise.race([exited, new Promise((r) => setTimeout(r, 30000))]);
   }
 }
 
